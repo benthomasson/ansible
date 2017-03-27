@@ -19,17 +19,25 @@ __metaclass__ = type
 
 import os
 
-from ansible import constants as C
+from ansible.errors import AnsibleError
+from ansible.module_utils._text import to_native
 from ansible.plugins.action import ActionBase
+
 
 class ActionModule(ActionBase):
     TRANSFERS_FILES = True
 
     def run(self, tmp=None, task_vars=None):
         ''' handler for file transfer operations '''
+        if task_vars is None:
+            task_vars = dict()
+
+        result = super(ActionModule, self).run(tmp, task_vars)
 
         if self._play_context.check_mode:
-            return dict(skipped=True, msg='check mode not supported for this module')
+            result['skipped'] = True
+            result['msg'] = 'check mode not supported for this module'
+            return result
 
         if not tmp:
             tmp = self._make_tmp_path()
@@ -39,9 +47,8 @@ class ActionModule(ActionBase):
             # do not run the command if the line contains creates=filename
             # and the filename already exists. This allows idempotence
             # of command executions.
-            result = self._execute_module(module_name='stat', module_args=dict(path=creates), task_vars=task_vars, tmp=tmp, persist_files=True)
-            stat = result.get('stat', None)
-            if stat and stat.get('exists', False):
+            if self._remote_file_exists(creates):
+                self._remove_tmp_path(tmp)
                 return dict(skipped=True, msg=("skipped, since %s exists" % creates))
 
         removes = self._task.args.get('removes')
@@ -49,9 +56,8 @@ class ActionModule(ActionBase):
             # do not run the command if the line contains removes=filename
             # and the filename does not exist. This allows idempotence
             # of command executions.
-            result = self._execute_module(module_name='stat', module_args=dict(path=removes), task_vars=task_vars, tmp=tmp, persist_files=True)
-            stat = result.get('stat', None)
-            if stat and not stat.get('exists', False):
+            if not self._remote_file_exists(removes):
+                self._remove_tmp_path(tmp)
                 return dict(skipped=True, msg=("skipped, since %s does not exist" % removes))
 
         # the script name is the first item in the raw params, so we split it
@@ -62,33 +68,33 @@ class ActionModule(ActionBase):
         source = parts[0]
         args   = ' '.join(parts[1:])
 
-        if self._task._role is not None:
-            source = self._loader.path_dwim_relative(self._task._role._role_path, 'files', source)
-        else:
-            source = self._loader.path_dwim_relative(self._loader.get_basedir(), 'files', source)
+        try:
+            source = self._loader.get_real_file(self._find_needle('files', source), decrypt=self._task.args.get('decrypt', True))
+        except AnsibleError as e:
+            return dict(failed=True, msg=to_native(e))
 
         # transfer the file to a remote tmp location
         tmp_src = self._connection._shell.join_path(tmp, os.path.basename(source))
-        self._connection.put_file(source, tmp_src)
+        self._transfer_file(source, tmp_src)
 
-        sudoable = True
         # set file permissions, more permissive when the copy is done as a different user
-        if self._play_context.become and self._play_context.become_user != 'root':
-            chmod_mode = 'a+rx'
-            sudoable = False
-        else:
-            chmod_mode = '+rx'
-        self._remote_chmod(tmp, chmod_mode, tmp_src, sudoable=sudoable)
+        self._fixup_perms2((tmp, tmp_src), execute=True)
 
         # add preparation steps to one ssh roundtrip executing the script
-        env_string = self._compute_environment_string()
+        env_dict = dict()
+        env_string = self._compute_environment_string(env_dict)
         script_cmd = ' '.join([env_string, tmp_src, args])
+        script_cmd = self._connection._shell.wrap_for_exec(script_cmd)
 
-        result = self._low_level_execute_command(cmd=script_cmd, tmp=None, sudoable=True)
+        exec_data = None
+        # HACK: come up with a sane way to pass around env outside the command
+        if self._connection.transport == "winrm":
+            exec_data = self._connection._create_raw_wrapper_payload(script_cmd, env_dict)
+
+        result.update(self._low_level_execute_command(cmd=script_cmd, in_data=exec_data, sudoable=True))
 
         # clean up after
-        if tmp and "tmp" in tmp and not C.DEFAULT_KEEP_REMOTE_FILES:
-            self._remove_tmp_path(tmp)
+        self._remove_tmp_path(tmp)
 
         result['changed'] = True
 

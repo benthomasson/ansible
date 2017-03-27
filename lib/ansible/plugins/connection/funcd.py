@@ -24,19 +24,24 @@
 from __future__ import (absolute_import, division, print_function)
 __metaclass__ = type
 
-HAVE_FUNC=False
+HAVE_FUNC = False
 try:
     import func.overlord.client as fc
-    HAVE_FUNC=True
+    HAVE_FUNC = True
 except ImportError:
     pass
 
 import os
-from ansible.callbacks import vvv
-from ansible import errors
 import tempfile
 import shutil
 
+from ansible.errors import AnsibleError
+
+try:
+    from __main__ import display
+except ImportError:
+    from ansible.utils.display import Display
+    display = Display()
 
 class Connection(object):
     ''' Func-based connections '''
@@ -50,22 +55,22 @@ class Connection(object):
 
     def connect(self, port=None):
         if not HAVE_FUNC:
-            raise errors.AnsibleError("func is not installed")
+            raise AnsibleError("func is not installed")
 
         self.client = fc.Client(self.host)
         return self
 
-    def exec_command(self, cmd, tmp_path, become_user=None, sudoable=False,
+    def exec_command(self, cmd, become_user=None, sudoable=False,
                      executable='/bin/sh', in_data=None):
         ''' run a command on the remote minion '''
 
         if in_data:
-            raise errors.AnsibleError("Internal Error: this module does not support optimized module pipelining")
+            raise AnsibleError("Internal Error: this module does not support optimized module pipelining")
 
         # totally ignores privlege escalation
-        vvv("EXEC %s" % (cmd), host=self.host)
+        display.vvv("EXEC %s" % (cmd), host=self.host)
         p = self.client.command.run(cmd)[self.host]
-        return (p[0], '', p[1], p[2])
+        return (p[0], p[1], p[2])
 
     def _normalize_path(self, path, prefix):
         if not path.startswith(os.path.sep):
@@ -77,14 +82,14 @@ class Connection(object):
         ''' transfer a file from local to remote '''
 
         out_path = self._normalize_path(out_path, '/')
-        vvv("PUT %s TO %s" % (in_path, out_path), host=self.host)
+        display.vvv("PUT %s TO %s" % (in_path, out_path), host=self.host)
         self.client.local.copyfile.send(in_path, out_path)
 
     def fetch_file(self, in_path, out_path):
         ''' fetch a file from remote to local '''
 
         in_path = self._normalize_path(in_path, '/')
-        vvv("FETCH %s TO %s" % (in_path, out_path), host=self.host)
+        display.vvv("FETCH %s TO %s" % (in_path, out_path), host=self.host)
         # need to use a tmp dir due to difference of semantic for getfile
         # ( who take a # directory as destination) and fetch_file, who
         # take a file directly

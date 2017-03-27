@@ -19,8 +19,11 @@
 from __future__ import (absolute_import, division, print_function)
 __metaclass__ = type
 
-from six import iteritems
 from jinja2.utils import missing
+
+from ansible.module_utils.six import iteritems
+from ansible.module_utils._text import to_native
+
 
 __all__ = ['AnsibleJ2Vars']
 
@@ -48,8 +51,11 @@ class AnsibleJ2Vars:
         self._locals  = dict()
         if isinstance(locals, dict):
             for key, val in iteritems(locals):
-                if key[:2] == 'l_' and val is not missing:
-                    self._locals[key[2:]] = val
+                if val is not missing:
+                    if key[:2] == 'l_':
+                        self._locals[key[2:]] = val
+                    elif key not in ('context', 'environment', 'template'):
+                        self._locals[key] = val
 
     def __contains__(self, k):
         if k in self._templar._available_variables:
@@ -80,10 +86,15 @@ class AnsibleJ2Vars:
         # HostVars is special, return it as-is, as is the special variable
         # 'vars', which contains the vars structure
         from ansible.vars.hostvars import HostVars
-        if isinstance(variable, dict) and varname == "vars" or isinstance(variable, HostVars):
+        if isinstance(variable, dict) and varname == "vars" or isinstance(variable, HostVars) or hasattr(variable, '__UNSAFE__'):
             return variable
         else:
-            return self._templar.template(variable)
+            value = None
+            try:
+                value = self._templar.template(variable)
+            except Exception as e:
+                raise type(e)(to_native(variable) + ': ' + e.message)
+            return value
 
     def add_locals(self, locals):
         '''
@@ -93,4 +104,3 @@ class AnsibleJ2Vars:
         if locals is None:
             return self
         return AnsibleJ2Vars(self._templar, self._globals, locals=locals, *self._extras)
-

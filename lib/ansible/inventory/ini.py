@@ -20,33 +20,32 @@ from __future__ import (absolute_import, division, print_function)
 __metaclass__ = type
 
 import ast
-import shlex
 import re
 
 from ansible import constants as C
-from ansible.errors import *
+from ansible.errors import AnsibleError
 from ansible.inventory.host import Host
 from ansible.inventory.group import Group
 from ansible.inventory.expand_hosts import detect_range
 from ansible.inventory.expand_hosts import expand_hostname_range
+from ansible.module_utils._text import to_text
 from ansible.parsing.utils.addresses import parse_address
-from ansible.utils.unicode import to_unicode, to_bytes
+from ansible.utils.shlex import shlex_split
+
 
 class InventoryParser(object):
     """
     Takes an INI-format inventory file and builds a list of groups and subgroups
     with their associated hosts and variable settings.
     """
+    _COMMENT_MARKERS = frozenset((u';', u'#'))
+    b_COMMENT_MARKERS = frozenset((b';', b'#'))
 
-    def __init__(self, loader, groups=None, filename=C.DEFAULT_HOST_LIST):
-        if groups is None:
-            groups = dict()
-
-        self._loader = loader
+    def __init__(self, loader, groups, filename=C.DEFAULT_HOST_LIST):
         self.filename = filename
 
-        # Start with an empty host list and the default 'all' and
-        # 'ungrouped' groups.
+        # Start with an empty host list and whatever groups we're passed in
+        # (which should include the default 'all' and 'ungrouped' groups).
 
         self.hosts = {}
         self.patterns = {}
@@ -54,13 +53,28 @@ class InventoryParser(object):
 
         # Read in the hosts, groups, and variables defined in the
         # inventory file.
-
         if loader:
-            (data, private) = loader._get_file_contents(filename)
+            (b_data, private) = loader._get_file_contents(filename)
         else:
-            with open(filename) as fh:
-                data = to_unicode(fh.read())
-        data = data.split('\n')
+            with open(filename, 'rb') as fh:
+                b_data = fh.read()
+
+        try:
+            # Faster to do to_text once on a long string than many
+            # times on smaller strings
+            data = to_text(b_data, errors='surrogate_or_strict').splitlines()
+        except UnicodeError:
+            # Handle non-utf8 in comment lines: https://github.com/ansible/ansible/issues/17593
+            data = []
+            for line in b_data.splitlines():
+                if line and line[0] in self.b_COMMENT_MARKERS:
+                    # Replace is okay for comment lines
+                    #data.append(to_text(line, errors='surrogate_then_replace'))
+                    # Currently we only need these lines for accurate lineno in errors
+                    data.append(u'')
+                else:
+                    # Non-comment lines still have to be valid uf-8
+                    data.append(to_text(line, errors='surrogate_or_strict'))
 
         self._parse(data)
 
@@ -89,9 +103,8 @@ class InventoryParser(object):
             self.lineno += 1
 
             line = line.strip()
-
             # Skip empty lines and comments
-            if line == '' or line.startswith(";") or line.startswith("#"):
+            if not line or line[0] in self._COMMENT_MARKERS:
                 continue
 
             # Is this a [section] header? That tells us what group we're parsing
@@ -127,6 +140,9 @@ class InventoryParser(object):
                     del pending_declarations[groupname]
 
                 continue
+            elif line.startswith('[') and line.endswith(']'):
+                self._raise_error("Invalid section entry: '%s'. Please make sure that there are no spaces" % line +
+                                  "in the section entry, and that there are no other invalid characters")
 
             # It's not a section, so the current state tells us what kind of
             # definition it must be. The individual parsers will raise an
@@ -138,6 +154,9 @@ class InventoryParser(object):
                 hosts = self._parse_host_definition(line)
                 for h in hosts:
                     self.groups[groupname].add_host(h)
+
+                #FIXME: needed to save hosts to group, find out why
+                self.groups[groupname].get_hosts()
 
             # [groupname:vars] contains variable definitions that must be
             # applied to the current group.
@@ -182,9 +201,8 @@ class InventoryParser(object):
         # 'all' at the time it was created.
 
         for group in self.groups.values():
-            if group.depth == 0 and group.name not in ('all', 'ungrouped'):
+            if group.depth == 0 and group.name != 'all':
                 self.groups['all'].add_child_group(group)
-
 
     def _parse_group_name(self, line):
         '''
@@ -231,13 +249,11 @@ class InventoryParser(object):
         # beta:2345 user=admin      # we'll tell shlex
         # gamma sudo=True user=root # to ignore comments
 
-        line = to_bytes(line)
         try:
-            tokens = shlex.split(line, comments=True)
+            tokens = shlex_split(line, comments=True)
         except ValueError as e:
-            self._raise_error("Error parsing host definition '%s': %s" % (varstring, e))
+            self._raise_error("Error parsing host definition '%s': %s" % (line, e))
 
-        tokens = [ to_unicode(t) for t in tokens]
         (hostnames, port) = self._expand_hostpattern(tokens[0])
         hosts = self._Hosts(hostnames, port)
 
@@ -269,9 +285,12 @@ class InventoryParser(object):
         # Can the given hostpattern be parsed as a host with an optional port
         # specification?
 
-        (pattern, port) = parse_address(hostpattern, allow_ranges=True)
-        if not pattern:
-            self._raise_error("Can't parse '%s' as host[:port]" % hostpattern)
+        try:
+            (pattern, port) = parse_address(hostpattern, allow_ranges=True)
+        except:
+            # not a recognizable host pattern
+            pattern = hostpattern
+            port = None
 
         # Once we have separated the pattern, we expand it into list of one or
         # more hostnames, depending on whether it contains any [x:y] ranges.
@@ -293,8 +312,7 @@ class InventoryParser(object):
 
         # Note that we decide whether or not to create a Host based solely on
         # the (non-)existence of its hostname in self.hosts. This means that one
-        # cannot add both "foo:22" and "foo:23" to the inventory. This behaviour
-        # is preserved for now, but this may be an easy FIXME.
+        # cannot add both "foo:22" and "foo:23" to the inventory.
 
         for hn in hostnames:
             if hn not in self.hosts:
@@ -309,18 +327,17 @@ class InventoryParser(object):
         Attempt to transform the string value from an ini file into a basic python object
         (int, dict, list, unicode string, etc).
         '''
-        if "#" not in v:
-            try:
-                v = ast.literal_eval(v)
-            # Using explicit exceptions.
-            # Likely a string that literal_eval does not like. We wil then just set it.
-            except ValueError:
-                # For some reason this was thought to be malformed.
-                pass
-            except SyntaxError:
-                # Is this a hash with an equals at the end?
-                pass
-        return to_unicode(v, nonstring='passthru', errors='strict')
+        try:
+            v = ast.literal_eval(v)
+        # Using explicit exceptions.
+        # Likely a string that literal_eval does not like. We wil then just set it.
+        except ValueError:
+            # For some reason this was thought to be malformed.
+            pass
+        except SyntaxError:
+            # Is this a hash with an equals at the end?
+            pass
+        return to_text(v, nonstring='passthru', errors='surrogate_or_strict')
 
     def get_host_variables(self, host):
         return {}
@@ -354,8 +371,7 @@ class InventoryParser(object):
         # FIXME: What are the real restrictions on group names, or rather, what
         # should they be? At the moment, they must be non-empty sequences of non
         # whitespace characters excluding ':' and ']', but we should define more
-        # precise rules in order to support better diagnostics. The same applies
-        # to hostnames. It seems sensible for them both to follow DNS rules.
+        # precise rules in order to support better diagnostics.
 
         self.patterns['groupname'] = re.compile(
             r'''^

@@ -1,4 +1,3 @@
-# (c) 2012-2014, Michael DeHaan <michael.dehaan@gmail.com>
 # (c) 2015 Toshio Kuratomi <tkuratomi@ansible.com>
 #
 # This file is part of Ansible
@@ -22,15 +21,15 @@ __metaclass__ = type
 
 import fcntl
 import gettext
-import select
 import os
+import shlex
 from abc import ABCMeta, abstractmethod, abstractproperty
-
 from functools import wraps
-from six import with_metaclass
 
 from ansible import constants as C
 from ansible.errors import AnsibleError
+from ansible.module_utils.six import string_types, with_metaclass
+from ansible.module_utils._text import to_bytes, to_text
 from ansible.plugins import shell_loader
 
 try:
@@ -39,13 +38,17 @@ except ImportError:
     from ansible.utils.display import Display
     display = Display()
 
+
 __all__ = ['ConnectionBase', 'ensure_connect']
+
+BUFSIZE = 65536
 
 
 def ensure_connect(func):
     @wraps(func)
     def wrapped(self, *args, **kwargs):
-        self._connect()
+        if not self._connected:
+            self._connect()
         return func(self, *args, **kwargs)
     return wrapped
 
@@ -56,11 +59,14 @@ class ConnectionBase(with_metaclass(ABCMeta, object)):
     '''
 
     has_pipelining = False
+    has_native_async = False # eg, winrm
+    always_pipeline_modules = False # eg, winrm
     become_methods = C.BECOME_METHODS
     # When running over this connection type, prefer modules written in a certain language
     # as discovered by the specified file extension.  An empty string as the
     # language means any language.
     module_implementation_preferences = ('',)
+    allow_executable = True
 
     def __init__(self, play_context, new_stdin, *args, **kwargs):
         # All these hasattrs allow subclasses to override these parameters
@@ -68,6 +74,7 @@ class ConnectionBase(with_metaclass(ABCMeta, object)):
             self._play_context = play_context
         if not hasattr(self, '_new_stdin'):
             self._new_stdin = new_stdin
+        # Backwards compat: self._display isn't really needed, just import the global display and use that.
         if not hasattr(self, '_display'):
             self._display = display
         if not hasattr(self, '_connected'):
@@ -75,6 +82,7 @@ class ConnectionBase(with_metaclass(ABCMeta, object)):
 
         self.success_key = None
         self.prompt = None
+        self._connected = False
 
         # load the shell plugin for this action/connection
         if play_context.shell:
@@ -82,11 +90,21 @@ class ConnectionBase(with_metaclass(ABCMeta, object)):
         elif hasattr(self, '_shell_type'):
             shell_type = getattr(self, '_shell_type')
         else:
-            shell_type = os.path.basename(C.DEFAULT_EXECUTABLE)
+            shell_type = 'sh'
+            shell_filename = os.path.basename(self._play_context.executable)
+            for shell in shell_loader.all():
+                if shell_filename in shell.COMPATIBLE_SHELLS:
+                    shell_type = shell.SHELL_FAMILY
+                    break
 
         self._shell = shell_loader.get(shell_type)
         if not self._shell:
             raise AnsibleError("Invalid shell type specified (%s), or the plugin for that shell type is missing." % shell_type)
+
+    @property
+    def connected(self):
+        '''Read-only property holding whether the connection to the remote host is active or closed.'''
+        return self._connected
 
     def _become_method_supported(self):
         ''' Checks if the current class supports this privilege escalation method '''
@@ -94,9 +112,9 @@ class ConnectionBase(with_metaclass(ABCMeta, object)):
         if self._play_context.become_method in self.become_methods:
             return True
 
-        raise AnsibleError("Internal Error: this connection module does not support running commands via %s" % become_method)
+        raise AnsibleError("Internal Error: this connection module does not support running commands via %s" % self._play_context.become_method)
 
-    def set_host_overrides(self, host):
+    def set_host_overrides(self, host, hostvars=None):
         '''
         An optional method, which can be used to set connection plugin parameters
         from variables set on the host (or groups to which the host belongs)
@@ -106,6 +124,25 @@ class ConnectionBase(with_metaclass(ABCMeta, object)):
         variables which may be used to set those attributes in this method.
         '''
         pass
+
+    @staticmethod
+    def _split_ssh_args(argstring):
+        """
+        Takes a string like '-o Foo=1 -o Bar="foo bar"' and returns a
+        list ['-o', 'Foo=1', '-o', 'Bar=foo bar'] that can be added to
+        the argument list. The list will not contain any empty elements.
+        """
+        try:
+            # Python 2.6.x shlex doesn't handle unicode type so we have to
+            # convert args to byte string for that case.  More efficient to
+            # try without conversion first but python2.6 doesn't throw an
+            # exception, it merely mangles the output:
+            # >>> shlex.split(u't e')
+            # ['t\x00\x00\x00', '\x00\x00\x00e\x00\x00\x00']
+            return [to_text(x.strip()) for x in shlex.split(to_bytes(argstring)) if x.strip()]
+        except AttributeError:
+            # In Python3, shlex.split doesn't work on a byte string.
+            return [to_text(x.strip()) for x in shlex.split(argstring) if x.strip()]
 
     @abstractproperty
     def transport(self):
@@ -118,12 +155,74 @@ class ConnectionBase(with_metaclass(ABCMeta, object)):
 
         # Check if PE is supported
         if self._play_context.become:
-            self.__become_method_supported()
+            self._become_method_supported()
 
     @ensure_connect
     @abstractmethod
-    def exec_command(self, cmd, tmp_path, in_data=None, executable=None, sudoable=True):
-        """Run a command on the remote host"""
+    def exec_command(self, cmd, in_data=None, sudoable=True):
+        """Run a command on the remote host.
+
+        :arg cmd: byte string containing the command
+        :kwarg in_data: If set, this data is passed to the command's stdin.
+            This is used to implement pipelining.  Currently not all
+            connection plugins implement pipelining.
+        :kwarg sudoable: Tell the connection plugin if we're executing
+            a command via a privilege escalation mechanism.  This may affect
+            how the connection plugin returns data.  Note that not all
+            connections can handle privilege escalation.
+        :returns: a tuple of (return code, stdout, stderr)  The return code is
+            an int while stdout and stderr are both byte strings.
+
+        When a command is executed, it goes through multiple commands to get
+        there.  It looks approximately like this::
+
+            [LocalShell] ConnectionCommand [UsersLoginShell (*)] ANSIBLE_SHELL_EXECUTABLE [(BecomeCommand ANSIBLE_SHELL_EXECUTABLE)] Command
+        :LocalShell: Is optional.  It is run locally to invoke the
+            ``Connection Command``.  In most instances, the
+            ``ConnectionCommand`` can be invoked directly instead.  The ssh
+            connection plugin which can have values that need expanding
+            locally specified via ssh_args is the sole known exception to
+            this.  Shell metacharacters in the command itself should be
+            processed on the remote machine, not on the local machine so no
+            shell is needed on the local machine.  (Example, ``/bin/sh``)
+        :ConnectionCommand: This is the command that connects us to the remote
+            machine to run the rest of the command.  ``ansible_ssh_user``,
+            ``ansible_ssh_host`` and so forth are fed to this piece of the
+            command to connect to the correct host (Examples ``ssh``,
+            ``chroot``)
+        :UsersLoginShell: This shell may or may not be created depending on
+            the ConnectionCommand used by the connection plugin.  This is the
+            shell that the ``ansible_ssh_user`` has configured as their login
+            shell.  In traditional UNIX parlance, this is the last field of
+            a user's ``/etc/passwd`` entry   We do not specifically try to run
+            the ``UsersLoginShell`` when we connect.  Instead it is implicit
+            in the actions that the ``ConnectionCommand`` takes when it
+            connects to a remote machine.  ``ansible_shell_type`` may be set
+            to inform ansible of differences in how the ``UsersLoginShell``
+            handles things like quoting if a shell has different semantics
+            than the Bourne shell.
+        :ANSIBLE_SHELL_EXECUTABLE: This is the shell set via the inventory var
+            ``ansible_shell_executable`` or via
+            ``constants.DEFAULT_EXECUTABLE`` if the inventory var is not set.
+            We explicitly invoke this shell so that we have predictable
+            quoting rules at this point.  ``ANSIBLE_SHELL_EXECUTABLE`` is only
+            settable by the user because some sudo setups may only allow
+            invoking a specific shell.  (For instance, ``/bin/bash`` may be
+            allowed but ``/bin/sh``, our default, may not).  We invoke this
+            twice, once after the ``ConnectionCommand`` and once after the
+            ``BecomeCommand``.  After the ConnectionCommand, this is run by
+            the ``UsersLoginShell``.  After the ``BecomeCommand`` we specify
+            that the ``ANSIBLE_SHELL_EXECUTABLE`` is being invoked directly.
+        :BecomeComand ANSIBLE_SHELL_EXECUTABLE: Is the command that performs
+            privilege escalation.  Setting this up is performed by the action
+            plugin prior to running ``exec_command``. So we just get passed
+            :param:`cmd` which has the BecomeCommand already added.
+            (Examples: sudo, su)  If we have a BecomeCommand then we will
+            invoke a ANSIBLE_SHELL_EXECUTABLE shell inside of it so that we
+            have a consistent view of quoting.
+        :Command: Is the command we're actually trying to run remotely.
+            (Examples: mkdir -p $HOME/.ansible, python $HOME/.ansible/tmp-script-file)
+        """
         pass
 
     @ensure_connect
@@ -143,32 +242,40 @@ class ConnectionBase(with_metaclass(ABCMeta, object)):
         """Terminate the connection"""
         pass
 
-    def check_become_success(self, output):
-        return self._play_context.success_key == output.rstrip()
+    def check_become_success(self, b_output):
+        b_success_key = to_bytes(self._play_context.success_key)
+        for b_line in b_output.splitlines(True):
+            if b_success_key == b_line.rstrip():
+                return True
+        return False
 
-    def check_password_prompt(self, output):
+    def check_password_prompt(self, b_output):
         if self._play_context.prompt is None:
             return False
-        elif isinstance(self._play_context.prompt, basestring):
-            return output.startswith(self._play_context.prompt)
+        elif isinstance(self._play_context.prompt, string_types):
+            b_prompt = to_bytes(self._play_context.prompt)
+            return b_prompt in b_output
         else:
-            return self._play_context.prompt(output)
+            return self._play_context.prompt(b_output)
 
-    def check_incorrect_password(self, output):
-        incorrect_password = gettext.dgettext(self._play_context.become_method, C.BECOME_ERROR_STRINGS[self._play_context.become_method])
-        return incorrect_password and incorrect_password in output
+    def check_incorrect_password(self, b_output):
+        b_incorrect_password = to_bytes(gettext.dgettext(self._play_context.become_method, C.BECOME_ERROR_STRINGS[self._play_context.become_method]))
+        return b_incorrect_password and b_incorrect_password in b_output
 
-    def check_missing_password(self, output):
-        missing_password = gettext.dgettext(self._play_context.become_method, C.BECOME_MISSING_STRINGS[self._play_context.become_method])
-        return missing_password and missing_password in output
+    def check_missing_password(self, b_output):
+        b_missing_password = to_bytes(gettext.dgettext(self._play_context.become_method, C.BECOME_MISSING_STRINGS[self._play_context.become_method]))
+        return b_missing_password and b_missing_password in b_output
 
     def connection_lock(self):
         f = self._play_context.connection_lockfd
-        self._display.vvvv('CONNECTION: pid %d waiting for lock on %d' % (os.getpid(), f))
+        display.vvvv('CONNECTION: pid %d waiting for lock on %d' % (os.getpid(), f), host=self._play_context.remote_addr)
         fcntl.lockf(f, fcntl.LOCK_EX)
-        self._display.vvvv('CONNECTION: pid %d acquired lock on %d' % (os.getpid(), f))
+        display.vvvv('CONNECTION: pid %d acquired lock on %d' % (os.getpid(), f), host=self._play_context.remote_addr)
 
     def connection_unlock(self):
         f = self._play_context.connection_lockfd
         fcntl.lockf(f, fcntl.LOCK_UN)
-        self._display.vvvv('CONNECTION: pid %d released lock on %d' % (os.getpid(), f))
+        display.vvvv('CONNECTION: pid %d released lock on %d' % (os.getpid(), f), host=self._play_context.remote_addr)
+
+    def reset(self):
+        display.warning("Reset is not implemented for this connection")

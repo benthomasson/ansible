@@ -21,7 +21,15 @@ __metaclass__ = type
 
 import os
 
+from ansible.errors import AnsibleError
+from ansible.playbook.task_include import TaskInclude
 from ansible.template import Templar
+
+try:
+    from __main__ import display
+except ImportError:
+    from ansible.utils.display import Display
+    display = Display()
 
 class IncludedFile:
 
@@ -42,15 +50,22 @@ class IncludedFile:
         return "%s (%s): %s" % (self._filename, self._args, self._hosts)
 
     @staticmethod
-    def process_include_results(results, tqm, iterator, loader, variable_manager):
+    def process_include_results(results, tqm, iterator, inventory, loader, variable_manager):
         included_files = []
 
-        for res in results:
-            if res._host in tqm._failed_hosts:
-                raise AnsibleError("host is failed, not including files")
+        def get_original_host(host):
+            if host.name in inventory._hosts_cache:
+                return inventory._hosts_cache[host.name]
+            else:
+                return inventory.get_host(host.name)
 
-            if res._task.action == 'include':
-                if res._task.loop:
+        for res in results:
+
+            original_host = res._host
+            original_task = res._task
+
+            if original_task.action == 'include':
+                if original_task.loop:
                     if 'results' not in res._result:
                         continue
                     include_results = res._result['results']
@@ -62,40 +77,53 @@ class IncludedFile:
                     if 'skipped' in include_result and include_result['skipped'] or 'failed' in include_result:
                         continue
 
-                    original_task = iterator.get_original_task(res._host, res._task)
-
-                    task_vars = variable_manager.get_vars(loader=loader, play=iterator._play, host=res._host, task=original_task)
+                    task_vars = variable_manager.get_vars(loader=loader, play=iterator._play, host=original_host, task=original_task)
                     templar = Templar(loader=loader, variables=task_vars)
 
                     include_variables = include_result.get('include_variables', dict())
-                    if 'item' in include_result:
-                        task_vars['item'] = include_variables['item'] = include_result['item']
+                    loop_var = 'item'
+                    if original_task.loop_control:
+                        loop_var = original_task.loop_control.loop_var or 'item'
+                    if loop_var in include_result:
+                        task_vars[loop_var] = include_variables[loop_var] = include_result[loop_var]
 
+                    include_file = None
                     if original_task:
-                        if original_task._task_include:
+                        if original_task.static:
+                            continue
+
+                        if original_task._parent:
                             # handle relative includes by walking up the list of parent include
                             # tasks and checking the relative result to see if it exists
-                            parent_include = original_task._task_include
+                            parent_include = original_task._parent
+                            cumulative_path = None
                             while parent_include is not None:
+                                if not isinstance(parent_include, TaskInclude):
+                                    parent_include = parent_include._parent
+                                    continue
                                 parent_include_dir = templar.template(os.path.dirname(parent_include.args.get('_raw_params')))
+                                if cumulative_path is None:
+                                    cumulative_path = parent_include_dir
+                                elif not os.path.isabs(cumulative_path):
+                                    cumulative_path = os.path.join(parent_include_dir, cumulative_path)
                                 include_target = templar.template(include_result['include'])
                                 if original_task._role:
-                                    new_basedir = os.path.join(original_task._role._role_path, 'tasks', parent_include_dir)
+                                    new_basedir = os.path.join(original_task._role._role_path, 'tasks', cumulative_path)
                                     include_file = loader.path_dwim_relative(new_basedir, 'tasks', include_target)
                                 else:
-                                    include_file = loader.path_dwim_relative(loader.get_basedir(), parent_include_dir, include_target)
+                                    include_file = loader.path_dwim_relative(loader.get_basedir(), cumulative_path, include_target)
 
                                 if os.path.exists(include_file):
                                     break
                                 else:
-                                    parent_include = parent_include._task_include
-                        elif original_task._role:
+                                    parent_include = parent_include._parent
+
+                    if include_file is None:
+                        if original_task._role:
                             include_target = templar.template(include_result['include'])
                             include_file = loader.path_dwim_relative(original_task._role._role_path, 'tasks', include_target)
                         else:
-                            include_file = loader.path_dwim(res._task.args.get('_raw_params'))
-                    else:
-                        include_file = loader.path_dwim(res._task.args.get('_raw_params'))
+                            include_file = loader.path_dwim(include_result['include'])
 
                     include_file = templar.template(include_file)
                     inc_file = IncludedFile(include_file, include_variables, original_task)
@@ -106,6 +134,6 @@ class IncludedFile:
                     except ValueError:
                         included_files.append(inc_file)
 
-                    inc_file.add_host(res._host)
+                    inc_file.add_host(original_host)
 
         return included_files

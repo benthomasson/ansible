@@ -15,6 +15,10 @@
 # You should have received a copy of the GNU General Public License
 # along with Ansible.  If not, see <http://www.gnu.org/licenses/>.
 
+# Make coding more python3-ish
+from __future__ import (absolute_import, division, print_function)
+__metaclass__ = type
+
 import os
 import urllib
 
@@ -26,6 +30,7 @@ except ImportError:
 
 from ansible.plugins.callback import CallbackBase
 from ansible.module_utils.urls import open_url
+
 
 class CallbackModule(CallbackBase):
     """This is an example ansible callback plugin that sends status
@@ -42,16 +47,17 @@ class CallbackModule(CallbackBase):
 
     """
     CALLBACK_VERSION = 2.0
-    CALLBACK_VERSION = 2.0
+    CALLBACK_TYPE = 'notification'
     CALLBACK_NAME = 'hipchat'
+    CALLBACK_NEEDS_WHITELIST = True
 
-    def __init__(self, display):
+    def __init__(self):
 
-        super(CallbackModule, self).__init__(display)
+        super(CallbackModule, self).__init__()
 
         if not HAS_PRETTYTABLE:
             self.disabled = True
-            self.display.warning('The `prettytable` python module is not installed. '
+            self._display.warning('The `prettytable` python module is not installed. '
                           'Disabling the HipChat callback plugin.')
 
         self.msg_uri = 'https://api.hipchat.com/v1/rooms/message'
@@ -62,12 +68,13 @@ class CallbackModule(CallbackBase):
 
         if self.token is None:
             self.disabled = True
-            self.display.warning('HipChat token could not be loaded. The HipChat '
+            self._display.warning('HipChat token could not be loaded. The HipChat '
                           'token can be provided using the `HIPCHAT_TOKEN` '
                           'environment variable.')
 
         self.printed_playbook = False
         self.playbook_name = None
+        self.play = None
 
     def send_msg(self, msg, msg_format='text', color='yellow', notify=False):
         """Method for sending a message to HipChat"""
@@ -85,12 +92,13 @@ class CallbackModule(CallbackBase):
             response = open_url(url, data=urllib.urlencode(params))
             return response.read()
         except:
-            self.display.warning('Could not submit message to hipchat')
+            self._display.warning('Could not submit message to hipchat')
 
-
-    def playbook_on_play_start(self, name):
+    def v2_playbook_on_play_start(self, play):
         """Display Playbook and play start messages"""
 
+        self.play = play
+        name = play.name
         # This block sends information about a playbook when it starts
         # The playbook object is not immediately available at
         # playbook_on_start so we grab it via the play

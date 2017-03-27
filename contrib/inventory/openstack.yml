@@ -26,3 +26,7 @@ clouds:
       username: stack
       password: stack
       project_name: stack
+ansible:
+  use_hostnames: True
+  expand_hostvars: False
+  fail_on_errors: True

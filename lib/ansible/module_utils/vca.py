@@ -14,11 +14,14 @@
 # You should have received a copy of the GNU General Public License
 # along with Ansible.  If not, see <http://www.gnu.org/licenses/>.
 
+import os
 try:
     from pyvcloud.vcloudair import VCA
     HAS_PYVCLOUD = True
 except ImportError:
     HAS_PYVCLOUD = False
+
+from ansible.module_utils.basic import AnsibleModule
 
 SERVICE_MAP = {'vca': 'ondemand', 'vchs': 'subscription', 'vcd': 'vcd'}
 LOGIN_HOST = {'vca': 'vca.vmware.com', 'vchs': 'vchs.vmware.com'}
@@ -34,8 +37,8 @@ class VcaError(Exception):
 
 def vca_argument_spec():
     return dict(
-        username=dict(),
-        password=dict(),
+        username=dict(type='str', aliases=['user'], required=True),
+        password=dict(type='str', aliases=['pass','passwd'], required=True, no_log=True),
         org=dict(),
         service_id=dict(),
         instance_id=dict(),
@@ -43,7 +46,8 @@ def vca_argument_spec():
         api_version=dict(default=DEFAULT_VERSION),
         service_type=dict(default=DEFAULT_SERVICE_TYPE, choices=SERVICE_MAP.keys()),
         vdc_name=dict(),
-        gateway_name=dict(default='gateway')
+        gateway_name=dict(default='gateway'),
+        verify_certs=dict(type='bool', default=True)
     )
 
 class VcaAnsibleModule(AnsibleModule):
@@ -76,7 +80,7 @@ class VcaAnsibleModule(AnsibleModule):
         gateway_name = self.params['gateway_name']
         _gateway = self.vca.get_gateway(vdc_name, gateway_name)
         if not _gateway:
-            raise VcaError('vca instance has no gateway named %s' % name)
+            raise VcaError('vca instance has no gateway named %s' % gateway_name)
         self._gateway = _gateway
         return _gateway
 
@@ -84,15 +88,34 @@ class VcaAnsibleModule(AnsibleModule):
     def vdc(self):
         if self._vdc is not None:
             return self._vdc
-        _vdc = self.vca.get_vdc(self.params['vdc_name'])
+        vdc_name = self.params['vdc_name']
+        _vdc = self.vca.get_vdc(vdc_name)
         if not _vdc:
-            raise VcaError('vca instance has no vdc named %s' % name)
+            raise VcaError('vca instance has no vdc named %s' % vdc_name)
         self._vdc = _vdc
         return _vdc
 
+    def get_vapp(self, vapp_name):
+        vapp = self.vca.get_vapp(self.vdc, vapp_name)
+        if not vapp:
+            raise VcaError('vca instance has no vapp named %s' % vapp_name)
+        return vapp
+
+    def get_vm(self, vapp_name, vm_name):
+        vapp = self.get_vapp(vapp_name)
+        children = vapp.me.get_Children()
+        vms = [vm for vm in children.get_Vm() if vm.name == vm_name]
+        try:
+            return vms[0]
+        except IndexError:
+            raise VcaError('vapp has no vm named %s' % vm_name)
+
     def create_instance(self):
         service_type = self.params.get('service_type', DEFAULT_SERVICE_TYPE)
-        host = self.params.get('host', LOGIN_HOST.get('service_type'))
+        if service_type == 'vcd':
+            host = self.params['host']
+        else:
+            host = LOGIN_HOST[service_type]
         username = self.params['username']
 
         version = self.params.get('api_version')
@@ -109,8 +132,12 @@ class VcaAnsibleModule(AnsibleModule):
         service_type = self.params['service_type']
         password = self.params['password']
 
-        if not self.vca.login(password=password):
-            self.fail('Login to VCA failed', response=self.vca.response.content)
+        login_org = None
+        if service_type == 'vcd':
+            login_org = self.params['org']
+
+        if not self.vca.login(password=password, org=login_org):
+            self.fail('Login to VCA failed', response=self.vca.response)
 
         try:
             method_name = 'login_%s' % service_type
@@ -118,8 +145,8 @@ class VcaAnsibleModule(AnsibleModule):
             meth()
         except AttributeError:
             self.fail('no login method exists for service_type %s' % service_type)
-        except VcaError, e:
-            self.fail(e.message, response=self.vca.response.content, **e.kwargs)
+        except VcaError as e:
+            self.fail(e.message, response=self.vca.response, **e.kwargs)
 
     def login_vca(self):
         instance_id = self.params['instance_id']
@@ -134,14 +161,14 @@ class VcaAnsibleModule(AnsibleModule):
 
         org = self.params['org']
         if not org:
-            raise VcaError('missing required or for service_type vchs')
+            raise VcaError('missing required org for service_type vchs')
 
         self.vca.login_to_org(service_id, org)
 
     def login_vcd(self):
         org = self.params['org']
         if not org:
-            raise VcaError('missing required or for service_type vchs')
+            raise VcaError('missing required org for service_type vcd')
 
         if not self.vca.token:
             raise VcaError('unable to get token for service_type vcd')
@@ -177,30 +204,30 @@ class VcaAnsibleModule(AnsibleModule):
 
 VCA_REQ_ARGS = ['instance_id', 'vdc_name']
 VCHS_REQ_ARGS = ['service_id']
-
+VCD_REQ_ARGS = []
 
 def _validate_module(module):
     if not HAS_PYVCLOUD:
-        module.fail_json("python module pyvcloud is needed for this module")
+        module.fail_json(msg="python module pyvcloud is needed for this module")
 
     service_type = module.params.get('service_type', DEFAULT_SERVICE_TYPE)
 
     if service_type == 'vca':
         for arg in VCA_REQ_ARGS:
             if module.params.get(arg) is None:
-                module.fail_json("argument %s is mandatory when service type "
+                module.fail_json(msg="argument %s is mandatory when service type "
                                  "is vca" % arg)
 
     if service_type == 'vchs':
         for arg in VCHS_REQ_ARGS:
             if module.params.get(arg) is None:
-                module.fail_json("argument %s is mandatory when service type "
+                module.fail_json(msg="argument %s is mandatory when service type "
                                  "is vchs" % arg)
 
     if service_type == 'vcd':
         for arg in VCD_REQ_ARGS:
             if module.params.get(arg) is None:
-                module.fail_json("argument %s is mandatory when service type "
+                module.fail_json(msg="argument %s is mandatory when service type "
                                  "is vcd" % arg)
 
 
@@ -292,7 +319,7 @@ def vca_login(module):
             _vchs_login(vca, password, service, org)
         elif service_type == 'vcd':
             _vcd_login(vca, password, org)
-    except VcaError, e:
+    except VcaError as e:
         module.fail_json(msg=e.message, **e.kwargs)
 
     return vca

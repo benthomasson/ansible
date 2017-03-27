@@ -17,9 +17,11 @@
 from __future__ import (absolute_import, division, print_function)
 __metaclass__ = type
 
-from ansible.errors import *
+from ansible.errors import AnsibleError
+from ansible.module_utils.six import string_types
 from ansible.plugins.lookup import LookupBase
 from ansible.utils.listify import listify_lookup_plugin_terms
+
 
 class LookupModule(LookupBase):
 
@@ -44,7 +46,7 @@ class LookupModule(LookupBase):
                 # ignore undefined items
                 break
 
-            if isinstance(term, basestring):
+            if isinstance(term, string_types):
                 # convert a variable to a list
                 term2 = listify_lookup_plugin_terms(term, templar=self._templar, loader=self._loader)
                 # but avoid converting a plain string to a list of one string
@@ -63,7 +65,6 @@ class LookupModule(LookupBase):
 
     def run(self, terms, variables, **kwargs):
 
-        ### FIXME: Is this needed now that listify is run on all lookup plugin terms?
         if not isinstance(terms, list):
             raise AnsibleError("with_flattened expects a list")
 

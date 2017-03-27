@@ -27,10 +27,9 @@ class LookupModule(LookupBase):
 
     def run(self, terms, variables, **kwargs):
 
-        ### FIXME: Is this needed now that listify is run on all lookup plugin terms?
         if not isinstance(terms, list):
             raise AnsibleError("with_indexed_items expects a list")
 
         items = self._flatten(terms)
-        return zip(range(len(items)), items)
+        return list(zip(range(len(items)), items))
 

@@ -24,8 +24,9 @@ import socket
 try:
     import dns.resolver
     import dns.reversename
-    from dns.rdatatype import *
-    from dns.exception import DNSException
+    from dns.rdatatype import (A, AAAA, CNAME, DLV, DNAME, DNSKEY, DS, HINFO, LOC,
+            MX, NAPTR, NS, NSEC3PARAM, PTR, RP, SOA, SPF, SRV, SSHFP, TLSA, TXT)
+    import dns.exception
     HAVE_DNS = True
 except ImportError:
     HAVE_DNS = False
@@ -38,29 +39,29 @@ def make_rdata_dict(rdata):
         Note: adding support for RRSIG is hard work. :)
     '''
     supported_types = {
-            A           : ['address'],
-            AAAA        : ['address'],
-            CNAME       : ['target'],
-            DNAME       : ['target'],
-            DLV         : ['algorithm', 'digest_type', 'key_tag', 'digest'],
-            DNSKEY      : ['flags', 'algorithm', 'protocol', 'key'],
-            DS          : ['algorithm', 'digest_type', 'key_tag', 'digest'],
-            HINFO       : ['cpu', 'os'],
-            LOC         : ['latitude', 'longitude', 'altitude', 'size', 'horizontal_precision', 'vertical_precision'],
-            MX          : ['preference', 'exchange'],
-            NAPTR       : ['order', 'preference', 'flags', 'service', 'regexp', 'replacement'],
-            NS          : ['target'],
-            NSEC3PARAM  : ['algorithm', 'flags', 'iterations', 'salt'],
-            PTR         : ['target'],
-            RP          : ['mbox', 'txt'],
-            # RRSIG       : ['algorithm', 'labels', 'original_ttl', 'expiration', 'inception', 'signature'],
-            SOA         : ['mname', 'rname', 'serial', 'refresh', 'retry', 'expire', 'minimum'],
-            SPF         : ['strings'],
-            SRV         : ['priority', 'weight', 'port', 'target'],
-            SSHFP       : ['algorithm', 'fp_type', 'fingerprint'],
-            TLSA        : ['usage', 'selector', 'mtype', 'cert'],
-            TXT         : ['strings'],
-        }
+        A           : ['address'],
+        AAAA        : ['address'],
+        CNAME       : ['target'],
+        DNAME       : ['target'],
+        DLV         : ['algorithm', 'digest_type', 'key_tag', 'digest'],
+        DNSKEY      : ['flags', 'algorithm', 'protocol', 'key'],
+        DS          : ['algorithm', 'digest_type', 'key_tag', 'digest'],
+        HINFO       : ['cpu', 'os'],
+        LOC         : ['latitude', 'longitude', 'altitude', 'size', 'horizontal_precision', 'vertical_precision'],
+        MX          : ['preference', 'exchange'],
+        NAPTR       : ['order', 'preference', 'flags', 'service', 'regexp', 'replacement'],
+        NS          : ['target'],
+        NSEC3PARAM  : ['algorithm', 'flags', 'iterations', 'salt'],
+        PTR         : ['target'],
+        RP          : ['mbox', 'txt'],
+        # RRSIG       : ['algorithm', 'labels', 'original_ttl', 'expiration', 'inception', 'signature'],
+        SOA         : ['mname', 'rname', 'serial', 'refresh', 'retry', 'expire', 'minimum'],
+        SPF         : ['strings'],
+        SRV         : ['priority', 'weight', 'port', 'target'],
+        SSHFP       : ['algorithm', 'fp_type', 'fingerprint'],
+        TLSA        : ['usage', 'selector', 'mtype', 'cert'],
+        TXT         : ['strings'],
+    }
 
     rd = {}
 
@@ -106,15 +107,15 @@ class LookupModule(LookupBase):
             example.com  qtype=A                            # same
             example.com/TXT                                 # specific qtype
             example.com  qtype=txt                          # same
-            192.168.1.2/PTR                                 # reverse PTR
-              ^^ shortcut for 2.1.168.192.in-addr.arpa/PTR
+            192.0.2.23/PTR                                 # reverse PTR
+              ^^ shortcut for 23.2.0.192.in-addr.arpa/PTR
             example.net/AAAA  @nameserver                   # query specified server
                                ^^^ can be comma-sep list of names/addresses
 
             ... flat=0                                      # returns a dict; default is 1 == string
         '''
 
-        if HAVE_DNS == False:
+        if HAVE_DNS is False:
             raise AnsibleError("Can't LOOKUP(dig): module dns.resolver is not installed")
 
         # Create Resolver object so that we can set NS if necessary
@@ -127,7 +128,7 @@ class LookupModule(LookupBase):
         flat   = True
 
         for t in terms:
-            if t.startswith('@'):       # e.g. "@10.0.1.2,192.168.1.1" is ok.
+            if t.startswith('@'):       # e.g. "@10.0.1.2,192.0.2.1" is ok.
                 nsset = t[1:].split(',')
                 nameservers = []
                 for ns in nsset:

@@ -22,10 +22,10 @@ __metaclass__ = type
 import string
 
 from ansible.compat.tests import unittest
-from ansible.compat.tests.mock import patch, MagicMock
+from ansible.compat.tests.mock import patch
 
-from ansible.errors import AnsibleError, AnsibleParserError
 from ansible.inventory import Inventory
+from ansible.inventory.expand_hosts import expand_hostname_range
 from ansible.vars import VariableManager
 
 from units.mock.loader import DictDataLoader
@@ -71,6 +71,16 @@ class TestInventory(unittest.TestCase):
         'a[1:]': [('a', (1, -1)), list(string.ascii_letters[1:])],
     }
 
+    ranges_to_expand = {
+        'a[1:2]': ['a1', 'a2'],
+        'a[1:10:2]': ['a1', 'a3', 'a5', 'a7', 'a9'],
+        'a[a:b]': ['aa', 'ab'],
+        'a[a:i:3]': ['aa', 'ad', 'ag'],
+        'a[a:b][c:d]': ['aac', 'aad', 'abc', 'abd'],
+        'a[0:1][2:3]': ['a02', 'a03', 'a12', 'a13'],
+        'a[a:b][2:3]': ['aa2', 'aa3', 'ab2', 'ab3'],
+    }
+
     def setUp(self):
         v = VariableManager()
         fake_loader = DictDataLoader({})
@@ -81,10 +91,10 @@ class TestInventory(unittest.TestCase):
 
         for p in self.patterns:
             r = self.patterns[p]
-            self.assertEqual(r, self.i._split_pattern(p))
+            self.assertEqual(r, self.i.split_host_pattern(p))
 
         for p, r in self.pattern_lists:
-            self.assertEqual(r, self.i._split_pattern(p))
+            self.assertEqual(r, self.i.split_host_pattern(p))
 
     def test_ranges(self):
 
@@ -98,3 +108,66 @@ class TestInventory(unittest.TestCase):
                     r[0][1]
                 )
             )
+
+    def test_expand_hostname_range(self):
+
+        for e in self.ranges_to_expand:
+            r = self.ranges_to_expand[e]
+            self.assertEqual(r, expand_hostname_range(e))
+
+
+class InventoryDefaultGroup(unittest.TestCase):
+
+    def test_empty_inventory(self):
+        inventory = self._get_inventory('')
+
+        self.assertIn('all', inventory.groups)
+        self.assertIn('ungrouped', inventory.groups)
+        self.assertFalse(inventory.groups['all'].get_hosts())
+        self.assertFalse(inventory.groups['ungrouped'].get_hosts())
+
+    def test_ini(self):
+        self._test_default_groups("""
+            host1
+            host2
+            host3
+            [servers]
+            host3
+            host4
+            host5
+            """)
+
+    def test_ini_explicit_ungrouped(self):
+        self._test_default_groups("""
+            [ungrouped]
+            host1
+            host2
+            host3
+            [servers]
+            host3
+            host4
+            host5
+            """)
+
+    def _get_inventory(self, inventory_content):
+        v = VariableManager()
+
+        fake_loader = DictDataLoader({
+            'hosts': inventory_content
+        })
+
+        with patch.object(Inventory, 'basedir') as mock_basedir:
+            mock_basedir.return_value = './'
+            return Inventory(loader=fake_loader, variable_manager=v, host_list='hosts')
+
+    def _test_default_groups(self, inventory_content):
+        inventory = self._get_inventory(inventory_content)
+
+        self.assertIn('all', inventory.groups)
+        self.assertIn('ungrouped', inventory.groups)
+        all_hosts = set(host.name for host in inventory.groups['all'].get_hosts())
+        self.assertEqual(set(['host1', 'host2', 'host3', 'host4', 'host5']), all_hosts)
+        ungrouped_hosts = set(host.name for host in inventory.groups['ungrouped'].get_hosts())
+        self.assertEqual(set(['host1', 'host2', 'host3']), ungrouped_hosts)
+        servers_hosts = set(host.name for host in inventory.groups['servers'].get_hosts())
+        self.assertEqual(set(['host3', 'host4', 'host5']), servers_hosts)

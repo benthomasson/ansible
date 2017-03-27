@@ -20,11 +20,12 @@ from __future__ import (absolute_import, division, print_function)
 __metaclass__ = type
 
 import itertools
-from six import string_types
 
 from ansible.errors import AnsibleError
+from ansible.module_utils.six import string_types
 from ansible.playbook.attribute import FieldAttribute
 from ansible.template import Templar
+
 
 class Taggable:
 
@@ -37,8 +38,12 @@ class Taggable:
     def _load_tags(self, attr, ds):
         if isinstance(ds, list):
             return ds
-        elif isinstance(ds, basestring):
-            return [ ds ]
+        elif isinstance(ds, string_types):
+            value = ds.split(',')
+            if isinstance(value, list):
+                return [ x.strip() for x in value ]
+            else:
+                return [ ds ]
         else:
             raise AnsibleError('tags must be specified as a list', obj=ds)
 
@@ -78,7 +83,7 @@ class Taggable:
             should_run = False
 
             if 'always' in tags or 'all' in only_tags:
-                 should_run = True
+                should_run = True
             elif not tags.isdisjoint(only_tags):
                 should_run = True
             elif 'tagged' in only_tags and tags != self.untagged:

@@ -24,12 +24,12 @@ import os
 
 from ansible import constants as C
 from ansible.errors import AnsibleError
-
-from ansible.inventory.host import Host
-from ansible.inventory.group import Group
 from ansible.utils.vars import combine_vars
+from ansible.module_utils._text import to_native
 
+#FIXME: make into plugins
 from ansible.inventory.ini import InventoryParser as InventoryINIParser
+from ansible.inventory.yaml import InventoryParser as InventoryYAMLParser
 from ansible.inventory.script import InventoryScript
 
 __all__ = ['get_file_parser']
@@ -45,36 +45,44 @@ def get_file_parser(hostsfile, groups, loader):
     parser = None
 
     try:
-        inv_file = open(hostsfile)
-        first_line = inv_file.readlines()[0]
-        inv_file.close()
-        if first_line.startswith('#!'):
-            shebang_present = True
+        with open(hostsfile, 'rb') as inv_file:
+            initial_chars = inv_file.read(2)
+            if initial_chars.startswith(b'#!'):
+                shebang_present = True
     except:
         pass
 
+    #FIXME: make this 'plugin loop'
+    # script
     if loader.is_executable(hostsfile):
         try:
             parser = InventoryScript(loader=loader, groups=groups, filename=hostsfile)
             processed = True
         except Exception as e:
-            myerr.append("The file %s is marked as executable, but failed to execute correctly. " % hostsfile + \
-                            "If this is not supposed to be an executable script, correct this with `chmod -x %s`." % hostsfile)
-            myerr.append(str(e))
+            myerr.append('Attempted to execute "%s" as inventory script: %s' % (hostsfile, to_native(e)))
+    elif shebang_present:
 
-    if not processed:
+        myerr.append("The inventory file \'%s\' looks like it should be an executable inventory script, but is not marked executable. "
+                     "Perhaps you want to correct this with `chmod +x %s`?" % (hostsfile, hostsfile))
+
+    # YAML/JSON
+    if not processed and not shebang_present and os.path.splitext(hostsfile)[-1] in C.YAML_FILENAME_EXTENSIONS:
+        try:
+            parser = InventoryYAMLParser(loader=loader, groups=groups, filename=hostsfile)
+            processed = True
+        except Exception as e:
+            myerr.append('Attempted to read "%s" as YAML: %s' % (to_native(hostsfile), to_native(e)))
+
+    # ini
+    if not processed and not shebang_present:
         try:
             parser = InventoryINIParser(loader=loader, groups=groups, filename=hostsfile)
             processed = True
         except Exception as e:
-            if shebang_present and not loader.is_executable(hostsfile):
-                myerr.append("The file %s looks like it should be an executable inventory script, but is not marked executable. " % hostsfile + \
-                              "Perhaps you want to correct this with `chmod +x %s`?" % hostsfile)
-            else:
-                myerr.append(str(e))
+            myerr.append('Attempted to read "%s" as ini file: %s ' % (to_native(hostsfile), to_native(e)))
 
     if not processed and myerr:
-        raise AnsibleError( '\n'.join(myerr) )
+        raise AnsibleError('\n'.join(myerr))
 
     return parser
 
@@ -107,7 +115,7 @@ class InventoryDirectory(object):
                 continue
             fullpath = os.path.join(self.directory, i)
             if os.path.isdir(fullpath):
-                parser = InventoryDirectory(loader=loader, filename=fullpath)
+                parser = InventoryDirectory(loader=loader, groups=groups, filename=fullpath)
             else:
                 parser = get_file_parser(fullpath, self.groups, loader)
                 if parser is None:
@@ -159,7 +167,7 @@ class InventoryDirectory(object):
         if 'ungrouped' in self.groups:
             ungrouped = self.groups['ungrouped']
             # loop on a copy of ungrouped hosts, as we want to change that list
-            for host in ungrouped.hosts[:]:
+            for host in frozenset(ungrouped.hosts):
                 if len(host.groups) > 1:
                     host.groups.remove(ungrouped)
                     ungrouped.hosts.remove(host)
@@ -184,7 +192,6 @@ class InventoryDirectory(object):
                     # info
                     allgroup.child_groups.remove(group)
 
-
     def _add_group(self, group):
         """ Merge an existing group or add a new one;
             Track parent and child groups, and hosts of the new one """
@@ -192,6 +199,8 @@ class InventoryDirectory(object):
         if group.name not in self.groups:
             # it's brand new, add him!
             self.groups[group.name] = group
+        # the Group class does not (yet) implement __eq__/__ne__,
+        # so unlike Host we do a regular comparison here
         if self.groups[group.name] != group:
             # different object, merge
             self._merge_groups(self.groups[group.name], group)
@@ -200,6 +209,9 @@ class InventoryDirectory(object):
         if host.name not in self.hosts:
             # Papa's got a brand new host
             self.hosts[host.name] = host
+        # because the __eq__/__ne__ methods in Host() compare the
+        # name fields rather than references, we use id() here to
+        # do the object comparison for merges
         if self.hosts[host.name] != host:
             # different object, merge
             self._merge_hosts(self.hosts[host.name], host)
@@ -213,7 +225,7 @@ class InventoryDirectory(object):
 
         # name
         if group.name != newgroup.name:
-            raise AnsibleError("Cannot merge group %s with %s" % (group.name, newgroup.name))
+            raise AnsibleError("Cannot merge inventory group %s with %s" % (group.name, newgroup.name))
 
         # depth
         group.depth = max([group.depth, newgroup.depth])
@@ -233,7 +245,6 @@ class InventoryDirectory(object):
                 for hostgroup in [g for g in host.groups]:
                     if hostgroup.name == group.name and hostgroup != self.groups[group.name]:
                         self.hosts[host.name].groups.remove(hostgroup)
-
 
         # group child membership relation
         for newchild in newgroup.child_groups:
@@ -286,4 +297,3 @@ class InventoryDirectory(object):
         for i in self.parsers:
             vars.update(i.get_host_variables(host))
         return vars
-

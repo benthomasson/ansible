@@ -16,10 +16,18 @@
 # You should have received a copy of the GNU General Public License
 # along with Ansible.  If not, see <http://www.gnu.org/licenses/>.
 
+# Make coding more python3-ish
+from __future__ import (absolute_import, division, print_function)
+__metaclass__ = type
+
 import os
 import smtplib
 import json
+
+from ansible.module_utils.six import string_types
+from ansible.module_utils._text import to_bytes
 from ansible.plugins.callback import CallbackBase
+
 
 def mail(subject='Ansible error mail', sender=None, to=None, cc=None, bcc=None, body=None, smtphost=None):
 
@@ -35,21 +43,28 @@ def mail(subject='Ansible error mail', sender=None, to=None, cc=None, bcc=None, 
 
     smtp = smtplib.SMTP(smtphost)
 
-    content = 'From: %s\n' % sender
-    content += 'To: %s\n' % to
-    if cc:
-        content += 'Cc: %s\n' % cc
-    content += 'Subject: %s\n\n' % subject
-    content += body
+    b_sender = to_bytes(sender)
+    b_to = to_bytes(to)
+    b_cc = to_bytes(cc)
+    b_bcc = to_bytes(bcc)
+    b_subject = to_bytes(subject)
+    b_body = to_bytes(body)
 
-    addresses = to.split(',')
+    b_content = b'From: %s\n' % b_sender
+    b_content += b'To: %s\n' % b_to
     if cc:
-        addresses += cc.split(',')
+        b_content += b'Cc: %s\n' % b_cc
+    b_content += b'Subject: %s\n\n' % b_subject
+    b_content += b_body
+
+    b_addresses = b_to.split(b',')
+    if cc:
+        b_addresses += b_cc.split(b',')
     if bcc:
-        addresses += bcc.split(',')
+        b_addresses += b_bcc.split(b',')
 
-    for address in addresses:
-        smtp.sendmail(sender, address, content)
+    for b_address in b_addresses:
+        smtp.sendmail(b_sender, b_address, b_content)
 
     smtp.quit()
 
@@ -61,6 +76,7 @@ class CallbackModule(CallbackBase):
     CALLBACK_VERSION = 2.0
     CALLBACK_TYPE = 'notification'
     CALLBACK_NAME = 'mail'
+    CALLBACK_NEEDS_WHITELIST = True
 
     def v2_runner_on_failed(self, res, ignore_errors=False):
 
@@ -69,20 +85,20 @@ class CallbackModule(CallbackBase):
         if ignore_errors:
             return
         sender = '"Ansible: %s" <root>' % host
-        attach =  res._task.action
+        attach = res._task.action
         if 'invocation' in res._result:
             attach = "%s:  %s" % (res._result['invocation']['module_name'], json.dumps(res._result['invocation']['module_args']))
 
         subject = 'Failed: %s' % attach
         body = 'The following task failed for host ' + host + ':\n\n%s\n\n' % attach
 
-        if 'stdout' in res._result.keys() and res._result['stdout']:
+        if 'stdout' in res._result and res._result['stdout']:
             subject = res._result['stdout'].strip('\r\n').split('\n')[-1]
             body += 'with the following output in standard output:\n\n' + res._result['stdout'] + '\n\n'
-        if 'stderr' in res._result.keys() and res._result['stderr']:
-            subject = res['stderr'].strip('\r\n').split('\n')[-1]
+        if 'stderr' in res._result and res._result['stderr']:
+            subject = res._result['stderr'].strip('\r\n').split('\n')[-1]
             body += 'with the following output in standard error:\n\n' + res._result['stderr'] + '\n\n'
-        if 'msg' in res._result.keys() and res._result['msg']:
+        if 'msg' in res._result and res._result['msg']:
             subject = res._result['msg'].strip('\r\n').split('\n')[0]
             body += 'with the following message:\n\n' + res._result['msg'] + '\n\n'
         body += 'A complete dump of the error:\n\n' + self._dump_results(res._result)
@@ -94,7 +110,7 @@ class CallbackModule(CallbackBase):
         res = result._result
 
         sender = '"Ansible: %s" <root>' % host
-        if isinstance(res, basestring):
+        if isinstance(res, string_types):
             subject = 'Unreachable: %s' % res.strip('\r\n').split('\n')[-1]
             body = 'An error occurred for host ' + host + ' with the following message:\n\n' + res
         else:
@@ -109,7 +125,7 @@ class CallbackModule(CallbackBase):
         res = result._result
 
         sender = '"Ansible: %s" <root>' % host
-        if isinstance(res, basestring):
+        if isinstance(res, string_types):
             subject = 'Async failure: %s' % res.strip('\r\n').split('\n')[-1]
             body = 'An error occurred for host ' + host + ' with the following message:\n\n' + res
         else:

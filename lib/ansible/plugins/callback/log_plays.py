@@ -15,11 +15,17 @@
 # You should have received a copy of the GNU General Public License
 # along with Ansible.  If not, see <http://www.gnu.org/licenses/>.
 
+# Make coding more python3-ish
+from __future__ import (absolute_import, division, print_function)
+__metaclass__ = type
+
 import os
 import time
 import json
 
+from ansible.module_utils._text import to_bytes
 from ansible.plugins.callback import CallbackBase
+
 
 # NOTE: in Ansible 1.2 or later general logging is available without
 # this plugin, just set ANSIBLE_LOG_PATH as an environment variable
@@ -35,13 +41,14 @@ class CallbackModule(CallbackBase):
     CALLBACK_VERSION = 2.0
     CALLBACK_TYPE = 'notification'
     CALLBACK_NAME = 'log_plays'
+    CALLBACK_NEEDS_WHITELIST = True
 
     TIME_FORMAT="%b %d %Y %H:%M:%S"
     MSG_FORMAT="%(now)s - %(category)s - %(data)s\n\n"
 
-    def __init__(self, display):
+    def __init__(self):
 
-        super(CallbackModule, self).__init__(display)
+        super(CallbackModule, self).__init__()
 
         if not os.path.exists("/var/log/ansible/hosts"):
             os.makedirs("/var/log/ansible/hosts")
@@ -60,9 +67,10 @@ class CallbackModule(CallbackBase):
 
         path = os.path.join("/var/log/ansible/hosts", host)
         now = time.strftime(self.TIME_FORMAT, time.localtime())
-        fd = open(path, "a")
-        fd.write(self.MSG_FORMAT % dict(now=now, category=category, data=data))
-        fd.close()
+
+        msg = to_bytes(self.MSG_FORMAT % dict(now=now, category=category, data=data))
+        with open(path, "ab") as fd:
+            fd.write(msg)
 
     def runner_on_failed(self, host, res, ignore_errors=False):
         self.log(host, 'FAILED', res)

@@ -1,4 +1,5 @@
 # Copyright 2012, Dag Wieers <dag@wieers.com>
+# Copyright 2016, Toshio Kuratomi <tkuratomi@ansible.com>
 #
 # This file is part of Ansible
 #
@@ -17,32 +18,64 @@
 from __future__ import (absolute_import, division, print_function)
 __metaclass__ = type
 
+from ansible.errors import AnsibleUndefinedVariable
+from ansible.module_utils.six import string_types
+from ansible.module_utils._text import to_text
 from ansible.plugins.action import ActionBase
-from ansible.utils.boolean import boolean
+
 
 class ActionModule(ActionBase):
     ''' Print statements during execution '''
 
     TRANSFERS_FILES = False
+    VALID_ARGS = frozenset(('msg', 'var', 'verbosity'))
 
-    def run(self, tmp=None, task_vars=dict()):
+    def run(self, tmp=None, task_vars=None):
+        if task_vars is None:
+            task_vars = dict()
 
-        if 'msg' in self._task.args:
-            if 'fail' in self._task.args and boolean(self._task.args['fail']):
-                result = dict(failed=True, msg=self._task.args['msg'])
+        for arg in self._task.args:
+            if arg not in self.VALID_ARGS:
+                return {"failed": True, "msg": "'%s' is not a valid option in debug" % arg}
+
+        if 'msg' in self._task.args and 'var' in self._task.args:
+            return {"failed": True, "msg": "'msg' and 'var' are incompatible options"}
+
+        result = super(ActionModule, self).run(tmp, task_vars)
+
+        verbosity = 0
+        # get task verbosity
+        if 'verbosity' in self._task.args:
+            verbosity = int(self._task.args['verbosity'])
+
+        if verbosity <= self._display.verbosity:
+            if 'msg' in self._task.args:
+                result['msg'] = self._task.args['msg']
+
+            elif 'var' in self._task.args:
+                try:
+                    results = self._templar.template(self._task.args['var'], convert_bare=True, fail_on_undefined=True, bare_deprecated=False)
+                    if results == self._task.args['var']:
+                        # if results is not str/unicode type, raise an exception
+                        if not isinstance(results, string_types):
+                            raise AnsibleUndefinedVariable
+                        # If var name is same as result, try to template it
+                        results = self._templar.template("{{" + results + "}}", convert_bare=True, fail_on_undefined=True)
+                except AnsibleUndefinedVariable:
+                    results = "VARIABLE IS NOT DEFINED!"
+
+                if isinstance(self._task.args['var'], (list, dict)):
+                    # If var is a list or dict, use the type as key to display
+                    result[to_text(type(self._task.args['var']))] = results
+                else:
+                    result[self._task.args['var']] = results
             else:
-                result = dict(msg=self._task.args['msg'])
-        # FIXME: move the LOOKUP_REGEX somewhere else
-        elif 'var' in self._task.args: # and not utils.LOOKUP_REGEX.search(self._task.args['var']):
-            results = self._templar.template(self._task.args['var'], convert_bare=True)
-            if results == self._task.args['var']:
-                results = "VARIABLE IS NOT DEFINED!"
-            result = dict()
-            result[self._task.args['var']] = results
-        else:
-            result = dict(msg='here we are')
+                result['msg'] = 'Hello world!'
 
-        # force flag to make debug output module always verbose
-        result['_ansible_verbose_always'] = True
+            # force flag to make debug output module always verbose
+            result['_ansible_verbose_always'] = True
+        else:
+            result['skipped_reason'] = "Verbosity threshold not met."
+            result['skipped'] = True
 
         return result

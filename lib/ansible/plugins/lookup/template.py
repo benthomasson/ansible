@@ -19,34 +19,50 @@ __metaclass__ = type
 
 import os
 
-from ansible import constants as C
 from ansible.errors import AnsibleError
 from ansible.plugins.lookup import LookupBase
+from ansible.module_utils._text import to_bytes, to_text
+
+try:
+    from __main__ import display
+except ImportError:
+    from ansible.utils.display import Display
+    display = Display()
+
 
 class LookupModule(LookupBase):
 
     def run(self, terms, variables, **kwargs):
 
-        basedir = self.get_basedir(variables)
-
+        convert_data_p = kwargs.get('convert_data', True)
         ret = []
 
         for term in terms:
-            self._display.debug("File lookup term: %s" % term)
+            display.debug("File lookup term: %s" % term)
 
-            lookupfile = self._loader.path_dwim_relative(basedir, 'templates', term)
-            self._display.vvvv("File lookup using %s as file" % lookupfile)
-            if lookupfile and os.path.exists(lookupfile):
-                with open(lookupfile, 'r') as f:
-                    template_data = f.read()
+            lookupfile = self.find_file_in_search_path(variables, 'templates', term)
+            display.vvvv("File lookup using %s as file" % lookupfile)
+            if lookupfile:
+                with open(to_bytes(lookupfile, errors='surrogate_or_strict'), 'rb') as f:
+                    template_data = to_text(f.read(), errors='surrogate_or_strict')
 
-                    searchpath = [self._loader._basedir, os.path.dirname(lookupfile)]
-                    if 'role_path' in variables:
-                        searchpath.insert(1, C.DEFAULT_ROLES_PATH)
-                        searchpath.insert(1, variables['role_path'])
-
+                    # set jinja2 internal search path for includes
+                    if 'ansible_search_path' in variables:
+                        searchpath = variables['ansible_search_path']
+                        # our search paths aren't actually the proper ones for jinja includes.
+                        # We want to search into the 'templates' subdir of each search path in
+                        # addition to our original search paths.
+                        newsearchpath = []
+                        for p in searchpath:
+                            newsearchpath.append(os.path.join(p, 'templates'))
+                            newsearchpath.append(p)
+                        searchpath = newsearchpath
+                    else:
+                        searchpath = [self._loader._basedir, os.path.dirname(lookupfile)]
                     self._templar.environment.loader.searchpath = searchpath
-                    res = self._templar.template(template_data, preserve_trailing_newlines=True)
+
+                    # do the templating
+                    res = self._templar.template(template_data, preserve_trailing_newlines=True,convert_data=convert_data_p)
                     ret.append(res)
             else:
                 raise AnsibleError("the template file %s could not be found for the lookup" % term)

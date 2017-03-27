@@ -25,24 +25,37 @@ class ActionModule(ActionBase):
 
     TRANSFERS_FILES = False
 
-    def run(self, tmp=None, task_vars=dict()):
+    UNUSED_PARAMS = {
+        'systemd': ['pattern', 'runlevel', 'sleep', 'arguments', 'args'],
+    }
+
+    def run(self, tmp=None, task_vars=None):
         ''' handler for package operations '''
 
-        name  = self._task.args.get('name', None)
-        state = self._task.args.get('state', None)
-        module = self._task.args.get('use', 'auto')
+        self._supports_check_mode = True
+        self._supports_async      = True
+
+        result = super(ActionModule, self).run(tmp, task_vars)
+
+        if result.get('skipped', False):
+            return result
+
+        module = self._task.args.get('use', 'auto').lower()
 
         if module == 'auto':
             try:
-                module = self._templar.template('{{ansible_service_mgr}}')
+                if self._task.delegate_to: # if we delegate, we should use delegated host's facts
+                    module = self._templar.template("{{hostvars['%s']['ansible_facts']['ansible_service_mgr']}}" % self._task.delegate_to)
+                else:
+                    module = self._templar.template('{{ansible_facts["ansible_service_mgr"]}}')
             except:
                 pass # could not get it from template!
 
         if module == 'auto':
-            facts = self._execute_module(module_name='setup', module_args=dict(filter='ansible_service_mgr'), task_vars=task_vars)
+            facts = self._execute_module(module_name='setup', module_args=dict(gather_subset='!all', filter='ansible_service_mgr'), task_vars=task_vars)
             self._display.debug("Facts %s" % facts)
-            if not 'failed' in facts:
-                module = getattr(facts['ansible_facts'], 'ansible_service_mgr', 'auto')
+            if 'ansible_facts' in facts and 'ansible_service_mgr' in facts['ansible_facts']:
+                module = facts['ansible_facts']['ansible_service_mgr']
 
         if not module or module == 'auto' or module not in self._shared_loader_obj.module_loader:
             module = 'service'
@@ -53,9 +66,21 @@ class ActionModule(ActionBase):
             if 'use' in new_module_args:
                 del new_module_args['use']
 
+            # for backwards compatibility
+            if 'state' in new_module_args and new_module_args['state'] == 'running':
+                self._display.deprecated(msg="state=running is deprecated. Please use state=started", version="2.7")
+                new_module_args['state'] = 'started'
+
+            if module in self.UNUSED_PARAMS:
+                for unused in self.UNUSED_PARAMS[module]:
+                    if unused in new_module_args:
+                        del new_module_args[unused]
+                        self._display.warning('Ignoring "%s" as it is not used in "%s"' % (unused, module))
+
             self._display.vvvv("Running %s" % module)
-            return self._execute_module(module_name=module, module_args=new_module_args, task_vars=task_vars)
-
+            result.update(self._execute_module(module_name=module, module_args=new_module_args, task_vars=task_vars, wrap_async=self._task.async))
         else:
+            result['failed'] = True
+            result['msg'] = 'Could not detect which service manager to use. Try gathering facts or setting the "use" option.'
 
-            return {'failed': True, 'msg': 'Could not detect which service manager to use. Try gathering facts or setting the "use" option.'}
+        return result
