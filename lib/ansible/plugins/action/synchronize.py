@@ -18,11 +18,14 @@ from __future__ import (absolute_import, division, print_function)
 __metaclass__ = type
 
 import os.path
+from collections import MutableSequence
 
+from ansible import constants as C
+from ansible.module_utils.six import string_types
+from ansible.module_utils._text import to_text
 from ansible.playbook.play_context import MAGIC_VARIABLE_MAPPING
 from ansible.plugins.action import ActionBase
 from ansible.plugins import connection_loader
-from ansible import constants as C
 
 boolean = C.mk_boolean
 
@@ -213,6 +216,11 @@ class ActionModule(ActionBase):
         except KeyError:
             dest_host = dest_host_inventory_vars.get('ansible_ssh_host', inventory_hostname)
 
+        dest_host_ids = [hostid for hostid in (dest_host_inventory_vars.get('inventory_hostname'),
+                                               dest_host_inventory_vars.get('ansible_host'),
+                                               dest_host_inventory_vars.get('ansible_ssh_host'))
+                         if hostid is not None]
+
         localhost_ports = set()
         for host in C.LOCALHOST:
             localhost_vars = task_vars['hostvars'].get(host, {})
@@ -228,9 +236,9 @@ class ActionModule(ActionBase):
         # host rsync puts the files on.  This is about *rsync's connection*,
         # not about the ansible connection to run the module.
         dest_is_local = False
-        if not delegate_to and remote_transport is False:
+        if delegate_to is None and remote_transport is False:
             dest_is_local = True
-        elif delegate_to and delegate_to == dest_host:
+        elif delegate_to is not None and delegate_to in dest_host_ids:
             dest_is_local = True
 
         # CHECK FOR NON-DEFAULT SSH PORT
@@ -242,7 +250,7 @@ class ActionModule(ActionBase):
         # Set use_delegate if we are going to run rsync on a delegated host
         # instead of localhost
         use_delegate = False
-        if dest_host == delegate_to:
+        if delegate_to is not None and delegate_to in dest_host_ids:
             # edge case: explicit delegate and dest_host are the same
             # so we run rsync on the remote machine targeting its localhost
             # (itself)
@@ -364,9 +372,7 @@ class ActionModule(ActionBase):
             # to.
             self._play_context.become = False
 
-        # make sure rsync path is quoted.
-        if rsync_path:
-            _tmp_args['rsync_path'] = '"%s"' % rsync_path
+        _tmp_args['rsync_path'] = rsync_path
 
         if use_ssh_args:
             ssh_args = [
@@ -379,16 +385,23 @@ class ActionModule(ActionBase):
         # If launching synchronize against docker container
         # use rsync_opts to support container to override rsh options
         if self._remote_transport in [ 'docker' ]:
-            if not isinstance(_tmp_args.get('rsync_opts'), list):
-                _tmp_args['rsync_opts'] = self._task.args.get('rsync_opts', '').split(' ')
+            # Replicate what we do in the module argumentspec handling for lists
+            if not isinstance(_tmp_args.get('rsync_opts'), MutableSequence):
+                tmp_rsync_opts = _tmp_args.get('rsync_opts', [])
+                if isinstance(tmp_rsync_opts, string_types):
+                    tmp_rsync_opts = tmp_rsync_opts.split(',')
+                elif isinstance(tmp_rsync_opts, (int, float)):
+                    tmp_rsync_opts = [to_text(tmp_rsync_opts)]
+                _tmp_args['rsync_opts'] = tmp_rsync_opts
+
             if '--blocking-io' not in _tmp_args['rsync_opts']:
                 _tmp_args['rsync_opts'].append('--blocking-io')
             if become and self._play_context.become_user:
-                _tmp_args['rsync_opts'].append("--rsh='%s exec -u %s -i'" % (self._docker_cmd, self._play_context.become_user))
+                _tmp_args['rsync_opts'].append("--rsh=%s exec -u %s -i" % (self._docker_cmd, self._play_context.become_user))
             elif user is not None:
-                _tmp_args['rsync_opts'].append("--rsh='%s exec -u %s -i'" % (self._docker_cmd, user))
+                _tmp_args['rsync_opts'].append("--rsh=%s exec -u %s -i" % (self._docker_cmd, user))
             else:
-                _tmp_args['rsync_opts'].append("--rsh='%s exec -i'" % self._docker_cmd)
+                _tmp_args['rsync_opts'].append("--rsh=%s exec -i" % self._docker_cmd)
 
         # run the module and store the result
         result.update(self._execute_module('synchronize', module_args=_tmp_args, task_vars=task_vars))

@@ -1,4 +1,5 @@
 import os
+import os.path
 import sys
 
 sys.path.insert(0, os.path.abspath('lib'))
@@ -7,16 +8,35 @@ try:
     from setuptools import setup, find_packages
 except ImportError:
     print("Ansible now needs setuptools in order to build. Install it using"
-            " your package manager (usually python-setuptools) or via pip (pip"
-            " install setuptools).")
+          " your package manager (usually python-setuptools) or via pip (pip"
+          " install setuptools).")
     sys.exit(1)
 
 with open('requirements.txt') as requirements_file:
     install_requirements = requirements_file.read().splitlines()
     if not install_requirements:
         print("Unable to read requirements from the requirements.txt file"
-                "That indicates this copy of the source code is incomplete.")
+              "That indicates this copy of the source code is incomplete.")
         sys.exit(2)
+
+SYMLINKS = {'ansible': frozenset(('ansible-console',
+                                  'ansible-doc',
+                                  'ansible-galaxy',
+                                  'ansible-playbook',
+                                  'ansible-pull',
+                                  'ansible-vault'))}
+
+for source in SYMLINKS:
+    for dest in SYMLINKS[source]:
+        dest_path = os.path.join('bin', dest)
+        if not os.path.islink(dest_path):
+            try:
+                os.unlink(dest_path)
+            except OSError as e:
+                if e.errno == 2:
+                    # File does not exist which is all we wanted
+                    pass
+            os.symlink(source, dest_path)
 
 setup(
     name='ansible',
@@ -29,7 +49,7 @@ setup(
     # Ansible will also make use of a system copy of python-six and
     # python-selectors2 if installed but use a Bundled copy if it's not.
     install_requires=install_requirements,
-    package_dir={ '': 'lib' },
+    package_dir={'': 'lib'},
     packages=find_packages('lib'),
     package_data={
         '': [
@@ -37,6 +57,7 @@ setup(
             'modules/windows/*.ps1',
             'modules/windows/*.ps1',
             'galaxy/data/*/*.*',
+            'galaxy/data/*/*/.*',
             'galaxy/data/*/*/*.*',
             'galaxy/data/*/tests/inventory'
         ],

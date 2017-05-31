@@ -199,13 +199,14 @@ updates:
 backup_path:
   description: The full path to the backup file
   returned: when backup is yes
-  type: path
+  type: string
   sample: /playbooks/ansible/backup/ios_config.2016-07-16@22:28:34
 """
 import re
 import time
 
 from ansible.module_utils.ios import run_commands, get_config, load_config
+from ansible.module_utils.ios import get_defaults_flag
 from ansible.module_utils.ios import ios_argument_spec
 from ansible.module_utils.ios import check_args as ios_check_args
 from ansible.module_utils.basic import AnsibleModule
@@ -266,7 +267,7 @@ def get_running_config(module):
     if not contents:
         flags = []
         if module.params['defaults']:
-            flags.append('all')
+            flags.append(get_defaults_flag(module))
         contents = get_config(module, flags=flags)
     contents, banners = extract_banners(contents)
     return NetworkConfig(indent=1, contents=contents), banners
@@ -381,8 +382,10 @@ def main():
 
     if module.params['save']:
         if not module.check_mode:
-            run_commands(module, ['copy running-config startup-config\r'])
-        result['changed'] = True
+            response = run_commands(module, ['show archive config differences'])
+            if response[0].find('!No changes were found') < 0:
+                run_commands(module, ['copy running-config startup-config\r'])
+                result['changed'] = True
 
     module.exit_json(**result)
 

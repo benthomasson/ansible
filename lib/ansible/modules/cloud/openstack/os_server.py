@@ -373,6 +373,46 @@ EXAMPLES = '''
         volumes:
         - photos
         - music
+
+# Creates a new instance with provisioning userdata using Cloud-Init
+- name: launch a compute instance
+  hosts: localhost
+  tasks:
+    - name: launch an instance
+      os_server:
+        name: vm1
+        state: present
+        image: "Ubuntu Server 14.04"
+        flavor: "P-1"
+        network: "Production"
+        userdata: |
+          #cloud-config
+          chpasswd:
+            list: |
+              ubuntu:{{ default_password }}
+            expire: False
+          packages:
+            - ansible
+          package_upgrade: true
+
+# Creates a new instance with provisioning userdata using Bash Scripts
+- name: launch a compute instance
+  hosts: localhost
+  tasks:
+    - name: launch an instance
+      os_server:
+        name: vm1
+        state: present
+        image: "Ubuntu Server 14.04"
+        flavor: "P-1"
+        network: "Production"
+        userdata: |
+          {%- raw -%}#!/bin/bash
+          echo "  up ip route add 10.0.0.0/8 via {% endraw -%}{{ intra_router }}{%- raw -%}" >> /etc/network/interfaces.d/eth0.conf
+          echo "  down ip route del 10.0.0.0/8" >> /etc/network/interfaces.d/eth0.conf
+          ifdown eth0 && ifup eth0
+          {% endraw %}
+
 '''
 
 try:
@@ -580,6 +620,37 @@ def _check_floating_ips(module, cloud, server):
     return (changed, server)
 
 
+def _check_security_groups(module, cloud, server):
+    changed = False
+
+    # server security groups were added to shade in 1.19. Until then this
+    # module simply ignored trying to update security groups and only set them
+    # on newly created hosts.
+    if not (hasattr(cloud, 'add_server_security_groups') and
+            hasattr(cloud, 'remove_server_security_groups')):
+        return changed, server
+
+    module_security_groups = set(module.params['security_groups'])
+    # Workaround a bug in shade <= 1.20.0
+    if server.security_groups is not None:
+        server_security_groups = set(sg.name for sg in server.security_groups)
+    else:
+        server_security_groups = set()
+
+    add_sgs = module_security_groups - server_security_groups
+    remove_sgs = server_security_groups - module_security_groups
+
+    if add_sgs:
+        cloud.add_server_security_groups(server, list(add_sgs))
+        changed = True
+
+    if remove_sgs:
+        cloud.remove_server_security_groups(server, list(remove_sgs))
+        changed = True
+
+    return (changed, server)
+
+
 def _get_server_state(module, cloud):
     state = module.params['state']
     server = cloud.get_server(module.params['name'])
@@ -589,8 +660,10 @@ def _get_server_state(module, cloud):
                 msg="The instance is available but not Active state: "
                     + server.status)
         (ip_changed, server) = _check_floating_ips(module, cloud, server)
+        (sg_changed, server) = _check_security_groups(module, cloud, server)
         (server_changed, server) = _update_server(module, cloud, server)
-        _exit_hostvars(module, cloud, server, ip_changed or server_changed)
+        _exit_hostvars(module, cloud, server,
+                       ip_changed or sg_changed or server_changed)
     if server and state == 'absent':
         return True
     if state == 'absent':

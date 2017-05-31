@@ -142,6 +142,8 @@ class LookupModule(LookupBase):
         if format is not None:
             self.format = format
 
+        return True
+
     def sanity_check(self):
         if self.count is None and self.end is None:
             raise AnsibleError( "must specify count or end in with_sequence")
@@ -176,7 +178,7 @@ class LookupModule(LookupBase):
                 yield formatted
             except (ValueError, TypeError):
                 raise AnsibleError(
-                    "problem formatting %r with %r" % self.format
+                    "problem formatting %r with %r" % (i, self.format)
                 )
 
     def run(self, terms, variables, **kwargs):

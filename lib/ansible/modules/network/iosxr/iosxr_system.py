@@ -26,10 +26,10 @@ DOCUMENTATION = """
 module: iosxr_system
 version_added: "2.3"
 author: "Peter Sprygada (@privateip)"
-short_description: Manage the system attributes on Cisco IOS-XR devices
+short_description: Manage the system attributes on Cisco IOS XR devices
 description:
   - This module provides declarative management of node system attributes
-    on Cisco IOS-XR devices.  It provides an option to configure host system
+    on Cisco IOS XR devices.  It provides an option to configure host system
     parameters or remove those parameters from the device active
     configuration.
 extends_documentation_fragment: iosxr
@@ -243,7 +243,7 @@ def main():
 
     if commands:
         if not module.check_mode:
-            load_config(module, commands, commit=True)
+            load_config(module, commands, result['warnings'], commit=True)
         result['changed'] = True
 
     module.exit_json(**result)

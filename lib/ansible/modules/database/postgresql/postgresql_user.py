@@ -52,8 +52,8 @@ options:
       - >
         When passing an encrypted password, the encrypted parameter must also be true, and it must be generated with the format
         C('str[\\"md5\\"] + md5[ password + username ]'), resulting in a total of 35 characters.  An easy way to do this is:
-        C(echo \\"md5`echo -n \\"verysecretpasswordJOE\\" | md5`\\"). Note that if encrypted is set, the stored password will be hashed whether or not
-        it is pre-encrypted.
+        C(echo \\"md5`echo -n \\"verysecretpasswordJOE\\" | md5`\\"). Note that if the provided password string is already in
+        MD5-hashed format, then it is used as-is, regardless of encrypted parameter.
     required: false
     default: null
   db:
@@ -103,7 +103,7 @@ options:
     required: false
     default: ""
     choices: [ "[NO]SUPERUSER","[NO]CREATEROLE", "[NO]CREATEUSER", "[NO]CREATEDB",
-                    "[NO]INHERIT", "[NO]LOGIN", "[NO]REPLICATION" ]
+                    "[NO]INHERIT", "[NO]LOGIN", "[NO]REPLICATION", "[NO]BYPASSRLS" ]
   state:
     description:
       - The user (role) state
@@ -207,8 +207,11 @@ EXAMPLES = '''
     password: NULL
 '''
 
-import re
+from hashlib import md5
 import itertools
+import re
+
+from distutils.version import StrictVersion
 
 try:
     import psycopg2
@@ -217,10 +220,11 @@ except ImportError:
     postgresqldb_found = False
 else:
     postgresqldb_found = True
+from ansible.module_utils._text import to_bytes
 from ansible.module_utils.six import iteritems
 
 _flags = ('SUPERUSER', 'CREATEROLE', 'CREATEUSER', 'CREATEDB', 'INHERIT', 'LOGIN', 'REPLICATION')
-VALID_FLAGS = frozenset(itertools.chain(_flags, ('NO%s' % f for f in _flags)))
+_flags_by_version = {'BYPASSRLS': '9.5.0'}
 
 VALID_PRIVS = dict(table=frozenset(('SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER', 'ALL')),
         database=frozenset(('CREATE', 'CONNECT', 'TEMPORARY', 'TEMP', 'ALL')),
@@ -230,7 +234,7 @@ VALID_PRIVS = dict(table=frozenset(('SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRU
 PRIV_TO_AUTHID_COLUMN = dict(SUPERUSER='rolsuper', CREATEROLE='rolcreaterole',
                              CREATEUSER='rolcreateuser', CREATEDB='rolcreatedb',
                              INHERIT='rolinherit', LOGIN='rolcanlogin',
-                             REPLICATION='rolreplication')
+                             REPLICATION='rolreplication', BYPASSRLS='rolbypassrls')
 
 class InvalidFlagsError(Exception):
     pass
@@ -292,20 +296,16 @@ def user_alter(cursor, module, user, password, role_attr_flags, encrypted, expir
         # Do we actually need to do anything?
         pwchanging = False
         if password is not None:
-            if encrypted:
-                if password.startswith('md5'):
-                    if password != current_role_attrs['rolpassword']:
-                        pwchanging = True
-                else:
-                    try:
-                        from passlib.hash import postgres_md5 as pm
-                        if pm.encrypt(password, user) != current_role_attrs['rolpassword']:
-                            pwchanging = True
-                    except ImportError:
-                        # Cannot check if passlib is not installed, so assume password is different
-                        pwchanging = True
-            else:
+            # 32: MD5 hashes are represented as a sequence of 32 hexadecimal digits
+            #  3: The size of the 'md5' prefix
+            # When the provided password looks like a MD5-hash, value of
+            # 'encrypted' is ignored.
+            if ((password.startswith('md5') and len(password) == 32+3) or encrypted == 'UNENCRYPTED'):
                 if password != current_role_attrs['rolpassword']:
+                    pwchanging = True
+            elif encrypted == 'ENCRYPTED':
+                hashed_password = 'md5{0}'.format(md5(to_bytes(password) + to_bytes(user)).hexdigest())
+                if hashed_password != current_role_attrs['rolpassword']:
                     pwchanging = True
 
         role_attr_flags_changing = False
@@ -321,7 +321,7 @@ def user_alter(cursor, module, user, password, role_attr_flags, encrypted, expir
                 if current_role_attrs[PRIV_TO_AUTHID_COLUMN[role_attr_name]] != role_attr_value:
                     role_attr_flags_changing = True
 
-        expires_changing = (expires is not None and expires == current_roles_attrs['rol_valid_until'])
+        expires_changing = (expires is not None and expires == current_role_attrs['rolvaliduntil'])
 
         if not pwchanging and not role_attr_flags_changing and not expires_changing:
             return False
@@ -338,6 +338,7 @@ def user_alter(cursor, module, user, password, role_attr_flags, encrypted, expir
 
         try:
             cursor.execute(' '.join(alter), query_password_data)
+            changed = True
         except psycopg2.InternalError:
             e = get_exception()
             if e.pgcode == '25006':
@@ -348,15 +349,6 @@ def user_alter(cursor, module, user, password, role_attr_flags, encrypted, expir
                 return changed
             else:
                 raise psycopg2.InternalError(e)
-
-        # Grab new role attributes.
-        cursor.execute(select, {"user": user})
-        new_role_attrs = cursor.fetchone()
-
-        # Detect any differences between current_ and new_role_attrs.
-        for i in range(len(current_role_attrs)):
-            if current_role_attrs[i] != new_role_attrs[i]:
-                changed = True
 
     elif no_password_changes and role_attr_flags != '':
         # Grab role information from pg_roles instead of pg_authid
@@ -558,7 +550,7 @@ def grant_privileges(cursor, user, privs):
                 changed = True
     return changed
 
-def parse_role_attrs(role_attr_flags):
+def parse_role_attrs(cursor, role_attr_flags):
     """
     Parse role attributes string for user creation.
     Format:
@@ -569,18 +561,24 @@ def parse_role_attrs(role_attr_flags):
 
         attributes := CREATEDB,CREATEROLE,NOSUPERUSER,...
         [ "[NO]SUPERUSER","[NO]CREATEROLE", "[NO]CREATEUSER", "[NO]CREATEDB",
-                            "[NO]INHERIT", "[NO]LOGIN", "[NO]REPLICATION" ]
+                            "[NO]INHERIT", "[NO]LOGIN", "[NO]REPLICATION",
+                            "[NO]BYPASSRLS" ]
+
+    Note: "[NO]BYPASSRLS" role attribute introduced in 9.5
 
     """
+    flags = frozenset(itertools.chain(_flags, get_valid_flags_by_version(cursor)))
+    valid_flags = frozenset(itertools.chain(flags, ('NO%s' % f for f in flags)))
+
     if ',' in role_attr_flags:
         flag_set = frozenset(r.upper() for r in role_attr_flags.split(","))
     elif role_attr_flags:
         flag_set = frozenset((role_attr_flags.upper(),))
     else:
         flag_set = frozenset()
-    if not flag_set.issubset(VALID_FLAGS):
+    if not flag_set.issubset(valid_flags):
         raise InvalidFlagsError('Invalid role_attr_flags specified: %s' %
-                ' '.join(flag_set.difference(VALID_FLAGS)))
+                ' '.join(flag_set.difference(valid_flags)))
     o_flags = ' '.join(flag_set)
     return o_flags
 
@@ -633,6 +631,35 @@ def parse_privs(privs, db):
 
     return o_privs
 
+def get_pg_server_version(cursor):
+    """
+    Queries Postgres for its server version.
+
+    server_version should be just the server version itself:
+
+    postgres=# SHOW SERVER_VERSION;
+    server_version
+    ----------------
+     9.6.2
+    (1 row)
+    """
+    cursor.execute("SHOW SERVER_VERSION")
+    return cursor.fetchone()['server_version']
+
+def get_valid_flags_by_version(cursor):
+    """
+    Some role attributes were introduced after certain versions. We want to
+    compile a list of valid flags against the current Postgres version.
+    """
+    current_version = StrictVersion(get_pg_server_version(cursor))
+
+    return [
+        flag
+        for flag, version_introduced in _flags_by_version.items()
+        if current_version >= StrictVersion(version_introduced)
+    ]
+
+
 # ===========================================
 # Module execution.
 #
@@ -671,11 +698,6 @@ def main():
     privs = parse_privs(module.params["priv"], db)
     port = module.params["port"]
     no_password_changes = module.params["no_password_changes"]
-    try:
-        role_attr_flags = parse_role_attrs(module.params["role_attr_flags"])
-    except InvalidFlagsError:
-        e = get_exception()
-        module.fail_json(msg=str(e))
     if module.params["encrypted"]:
         encrypted = "ENCRYPTED"
     else:
@@ -722,6 +744,12 @@ def main():
     except Exception:
         e = get_exception()
         module.fail_json(msg="unable to connect to database: %s" % e)
+
+    try:
+        role_attr_flags = parse_role_attrs(cursor, module.params["role_attr_flags"])
+    except InvalidFlagsError:
+        e = get_exception()
+        module.fail_json(msg=str(e))
 
     kw = dict(user=user)
     changed = False

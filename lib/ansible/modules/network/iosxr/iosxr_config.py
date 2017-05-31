@@ -175,7 +175,7 @@ updates:
 backup_path:
   description: The full path to the backup file
   returned: when backup is yes
-  type: path
+  type: string
   sample: /playbooks/ansible/backup/iosxr01.2016-07-16@22:28:34
 """
 from ansible.module_utils.basic import AnsibleModule
@@ -240,8 +240,8 @@ def run(module, result):
 
             result['commands'] = commands
 
-        diff = load_config(module, commands, not check_mode,
-                           replace_config, comment)
+        diff = load_config(module, commands, result['warnings'],
+                           not check_mode, replace_config, comment)
         if diff:
             result['diff'] = dict(prepared=diff)
             result['changed'] = True

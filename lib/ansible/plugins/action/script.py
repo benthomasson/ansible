@@ -34,11 +34,6 @@ class ActionModule(ActionBase):
 
         result = super(ActionModule, self).run(tmp, task_vars)
 
-        if self._play_context.check_mode:
-            result['skipped'] = True
-            result['msg'] = 'check mode not supported for this module'
-            return result
-
         if not tmp:
             tmp = self._make_tmp_path()
 
@@ -97,5 +92,9 @@ class ActionModule(ActionBase):
         self._remove_tmp_path(tmp)
 
         result['changed'] = True
+
+        if 'rc' in result and result['rc'] != 0:
+            result['failed'] = True
+            result['msg'] = 'non-zero return code'
 
         return result

@@ -170,7 +170,7 @@ Looping over Fileglobs
             src: "{{ item }}"
             dest: "/etc/fooapp/"
             owner: "root"
-            mode: 600
+            mode: 0600
           with_fileglob:
             - "/playbooks/files/fooapp/*"
 
@@ -277,10 +277,12 @@ The authorized_key pattern is exactly where it comes up most.
 Looping over Integer Sequences
 ``````````````````````````````
 
-``with_sequence`` generates a sequence of items in ascending numerical order. You
-can specify a start, end, and an optional step value.
+``with_sequence`` generates a sequence of items. You
+can specify a start value, an end value, an optional "stride" value that specifies the number of steps to increment the sequence, and an optional printf-style format string.
 
-Arguments should be specified in key=value pairs.  If supplied, the 'format' is a printf style string.
+Arguments should be specified as key=value pair strings.
+
+A simple shortcut form of the arguments string is also accepted: ``[start-]end[/stride][:format]``.
 
 Numerical values can be specified in decimal, hexadecimal (0x3f8) or octal (0600).
 Negative numbers are not supported.  This works as follows::
@@ -303,27 +305,20 @@ Negative numbers are not supported.  This works as follows::
             name: "{{ item }}"
             state: present
             groups: "evens"
-          with_sequence:
-            - start: 0
-            - end: 32
-            - format: testuser%02x
+          with_sequence: start=0 end=32 format=testuser%02x
 
         # create a series of directories with even numbers for some reason
         - file:
             dest: "/var/stuff/{{ item }}"
             state: directory
-          with_sequence:
-            - start: 4
-            - end: 16
-            - stride: 2
+          with_sequence: start=4 end=16 stride=2
 
         # a simpler way to use the sequence plugin
         # create 4 groups
         - group:
             name: "group{{ item }}"
             state: present
-          with_sequence:
-            count: 4
+          with_sequence: count=4
 
 .. _random_choice:
 
@@ -354,8 +349,7 @@ Do-Until Loops
 
 Sometimes you would want to retry a task until a certain condition is met.  Here's an example::
 
-    - action:
-        shell /usr/bin/foo
+    - shell: /usr/bin/foo
       register: result
       until: result.stdout.find("all systems go") != -1
       retries: 5

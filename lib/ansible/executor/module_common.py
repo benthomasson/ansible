@@ -50,12 +50,12 @@ except ImportError:
     display = Display()
 
 
-REPLACER          = b"#<<INCLUDE_ANSIBLE_MODULE_COMMON>>"
-REPLACER_VERSION  = b"\"<<ANSIBLE_VERSION>>\""
-REPLACER_COMPLEX  = b"\"<<INCLUDE_ANSIBLE_MODULE_COMPLEX_ARGS>>\""
-REPLACER_WINDOWS  = b"# POWERSHELL_COMMON"
+REPLACER = b"#<<INCLUDE_ANSIBLE_MODULE_COMMON>>"
+REPLACER_VERSION = b"\"<<ANSIBLE_VERSION>>\""
+REPLACER_COMPLEX = b"\"<<INCLUDE_ANSIBLE_MODULE_COMPLEX_ARGS>>\""
+REPLACER_WINDOWS = b"# POWERSHELL_COMMON"
 REPLACER_JSONARGS = b"<<INCLUDE_ANSIBLE_MODULE_JSON_ARGS>>"
-REPLACER_SELINUX  = b"<<SELINUX_SPECIAL_FILESYSTEMS>>"
+REPLACER_SELINUX = b"<<SELINUX_SPECIAL_FILESYSTEMS>>"
 
 # We could end up writing out parameters with unicode characters so we need to
 # specify an encoding for the python source file
@@ -502,7 +502,7 @@ def recursive_finder(name, data, py_module_names, py_module_cache, zf):
                     break
                 try:
                     module_info = imp.find_module(py_module_name[-idx],
-                            [os.path.join(p, *py_module_name[:-idx]) for p in module_utils_paths])
+                                                  [os.path.join(p, *py_module_name[:-idx]) for p in module_utils_paths])
                     break
                 except ImportError:
                     continue
@@ -543,12 +543,17 @@ def recursive_finder(name, data, py_module_names, py_module_cache, zf):
                 if module_info[2][2] == imp.PKG_DIRECTORY:
                     # Read the __init__.py instead of the module file as this is
                     # a python package
-                    py_module_cache[py_module_name + ('__init__',)] = _slurp(os.path.join(os.path.join(module_info[1], '__init__.py')))
-                    normalized_modules.add(py_module_name + ('__init__',))
+                    normalized_name = py_module_name + ('__init__',)
+                    normalized_path = os.path.join(os.path.join(module_info[1], '__init__.py'))
+                    normalized_data = _slurp(normalized_path)
                 else:
-                    py_module_cache[py_module_name] = module_info[0].read()
+                    normalized_name = py_module_name
+                    normalized_path = module_info[1]
+                    normalized_data = module_info[0].read()
                     module_info[0].close()
-                    normalized_modules.add(py_module_name)
+
+                py_module_cache[normalized_name] = (normalized_data, normalized_path)
+                normalized_modules.add(normalized_name)
 
             # Make sure that all the packages that this module is a part of
             # are also added
@@ -556,9 +561,9 @@ def recursive_finder(name, data, py_module_names, py_module_cache, zf):
                 py_pkg_name = py_module_name[:-i] + ('__init__',)
                 if py_pkg_name not in py_module_names:
                     pkg_dir_info = imp.find_module(py_pkg_name[-1],
-                            [os.path.join(p, *py_pkg_name[:-1]) for p in module_utils_paths])
+                                                   [os.path.join(p, *py_pkg_name[:-1]) for p in module_utils_paths])
                     normalized_modules.add(py_pkg_name)
-                    py_module_cache[py_pkg_name] = _slurp(pkg_dir_info[1])
+                    py_module_cache[py_pkg_name] = (_slurp(pkg_dir_info[1]), pkg_dir_info[1])
 
     #
     # iterate through all of the ansible.module_utils* imports that we haven't
@@ -573,7 +578,8 @@ def recursive_finder(name, data, py_module_names, py_module_cache, zf):
         py_module_file_name = '%s.py' % py_module_path
 
         zf.writestr(os.path.join("ansible/module_utils",
-                py_module_file_name), py_module_cache[py_module_name])
+                    py_module_file_name), py_module_cache[py_module_name][0])
+        display.vvv("Using module_utils file %s" % py_module_cache[py_module_name][1])
 
     # Add the names of the files we're scheduling to examine in the loop to
     # py_module_names so that we don't re-examine them in the next pass
@@ -581,7 +587,7 @@ def recursive_finder(name, data, py_module_names, py_module_cache, zf):
     py_module_names.update(unprocessed_py_module_names)
 
     for py_module_file in unprocessed_py_module_names:
-        recursive_finder(py_module_file, py_module_cache[py_module_file], py_module_names, py_module_cache, zf)
+        recursive_finder(py_module_file, py_module_cache[py_module_file][0], py_module_names, py_module_cache, zf)
         # Save memory; the file won't have to be read again for this ansible module.
         del py_module_cache[py_module_file]
 
@@ -677,14 +683,14 @@ def _find_module_utils(module_name, b_module_data, module_path, module_args, tas
                     # Note: If we need to import from release.py first,
                     # remember to catch all exceptions: https://github.com/ansible/ansible/issues/16523
                     zf.writestr('ansible/__init__.py',
-                            b'from pkgutil import extend_path\n__path__=extend_path(__path__,__name__)\n__version__="' +
-                            to_bytes(__version__) + b'"\n__author__="' +
-                            to_bytes(__author__) + b'"\n')
+                                b'from pkgutil import extend_path\n__path__=extend_path(__path__,__name__)\n__version__="' +
+                                to_bytes(__version__) + b'"\n__author__="' +
+                                to_bytes(__author__) + b'"\n')
                     zf.writestr('ansible/module_utils/__init__.py', b'from pkgutil import extend_path\n__path__=extend_path(__path__,__name__)\n')
 
                     zf.writestr('ansible_module_%s.py' % module_name, b_module_data)
 
-                    py_module_cache = { ('__init__',): b'' }
+                    py_module_cache = {('__init__',): (b'', '[builtin]')}
                     recursive_finder(module_name, b_module_data, py_module_names, py_module_cache, zf)
                     zf.close()
                     zipdata = base64.b64encode(zipoutput.getvalue())
@@ -715,8 +721,8 @@ def _find_module_utils(module_name, b_module_data, module_path, module_args, tas
                 try:
                     zipdata = open(cached_module_filename, 'rb').read()
                 except IOError:
-                    raise AnsibleError('A different worker process failed to create module file.'
-                    ' Look at traceback for that process for debugging information.')
+                    raise AnsibleError('A different worker process failed to create module file. '
+                                       'Look at traceback for that process for debugging information.')
         zipdata = to_text(zipdata, errors='surrogate_or_strict')
 
         shebang, interpreter = _get_shebang(u'/usr/bin/python', task_vars)
@@ -728,7 +734,7 @@ def _find_module_utils(module_name, b_module_data, module_path, module_args, tas
         interpreter_parts = interpreter.split(u' ')
         interpreter = u"'{0}'".format(u"', '".join(interpreter_parts))
 
-        now=datetime.datetime.utcnow()
+        now = datetime.datetime.utcnow()
         output.write(to_bytes(ACTIVE_ANSIBALLZ_TEMPLATE % dict(
             zipdata=zipdata,
             ansible_module=module_name,
@@ -831,30 +837,31 @@ def modify_module(module_name, module_path, module_args, task_vars=dict(), modul
 
     return (b_module_data, module_style, to_text(shebang, nonstring='passthru'))
 
+
 def build_windows_module_payload(module_name, module_path, b_module_data, module_args, task_vars, task, play_context, environment):
     exec_manifest = dict(
-        module_entry=base64.b64encode(b_module_data),
+        module_entry=to_text(base64.b64encode(b_module_data)),
         powershell_modules=dict(),
         module_args=module_args,
         actions=['exec'],
         environment=environment
     )
 
-    exec_manifest['exec'] = base64.b64encode(to_bytes(leaf_exec))
+    exec_manifest['exec'] = to_text(base64.b64encode(to_bytes(leaf_exec)))
 
     if task.async > 0:
         exec_manifest["actions"].insert(0, 'async_watchdog')
-        exec_manifest["async_watchdog"] = base64.b64encode(to_bytes(async_watchdog))
+        exec_manifest["async_watchdog"] = to_text(base64.b64encode(to_bytes(async_watchdog)))
         exec_manifest["actions"].insert(0, 'async_wrapper')
-        exec_manifest["async_wrapper"] = base64.b64encode(to_bytes(async_wrapper))
+        exec_manifest["async_wrapper"] = to_text(base64.b64encode(to_bytes(async_wrapper)))
         exec_manifest["async_jid"] = str(random.randint(0, 999999999999))
         exec_manifest["async_timeout_sec"] = task.async
 
-    if play_context.become and play_context.become_method=='runas':
+    if play_context.become and play_context.become_method == 'runas':
         exec_manifest["actions"].insert(0, 'become')
         exec_manifest["become_user"] = play_context.become_user
         exec_manifest["become_password"] = play_context.become_pass
-        exec_manifest["become"] = base64.b64encode(to_bytes(become_wrapper))
+        exec_manifest["become"] = to_text(base64.b64encode(to_bytes(become_wrapper)))
 
     lines = b_module_data.split(b'\n')
     module_names = set()
@@ -868,8 +875,14 @@ def build_windows_module_payload(module_name, module_path, b_module_data, module
             # TODO: add #Requires checks for Ansible.ModuleUtils.X
 
     for m in module_names:
-        exec_manifest["powershell_modules"][m] = base64.b64encode(
-            to_bytes(_slurp(os.path.join(_MODULE_UTILS_PATH, m + ".ps1"))))
+        m = to_text(m)
+        exec_manifest["powershell_modules"][m] = to_text(
+            base64.b64encode(
+                to_bytes(
+                    _slurp(os.path.join(_MODULE_UTILS_PATH, m + ".ps1"))
+                )
+            )
+        )
 
     # FUTURE: smuggle this back as a dict instead of serializing here; the connection plugin may need to modify it
     b_module_data = json.dumps(exec_manifest)

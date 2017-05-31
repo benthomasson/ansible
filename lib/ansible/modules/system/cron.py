@@ -33,7 +33,7 @@
 
 ANSIBLE_METADATA = {'metadata_version': '1.0',
                     'status': ['preview'],
-                    'supported_by': 'curated'}
+                    'supported_by': 'community'}
 
 
 DOCUMENTATION = """
@@ -726,7 +726,7 @@ def main():
                 changed = True
 
     # no changes to env/job, but existing crontab needs a terminating newline
-    if not changed:
+    if not changed and not crontab.existing == '':
         if not (crontab.existing.endswith('\r') or crontab.existing.endswith('\n')):
             changed = True
 
@@ -752,12 +752,11 @@ def main():
             res_args['diff'] = diff
 
     # retain the backup only if crontab or cron file have changed
-    if backup:
+    if backup and not module.check_mode:
         if changed:
             res_args['backup_file'] = backup_file
         else:
-            if not module.check_mode:
-                os.unlink(backup_file)
+            os.unlink(backup_file)
 
     if cron_file:
         res_args['cron_file'] = cron_file
