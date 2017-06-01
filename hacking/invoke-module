@@ -1,0 +1,63 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+"""
+Usage:
+    invoke-module [options] <module-file> <json-input-file>
+
+Options:
+    -h, --help        Show this page
+    --debug            Show debug logging
+    --verbose        Show verbose logging
+"""
+from docopt import docopt
+import logging
+import sys
+import os
+import subprocess
+import json
+
+logger = logging.getLogger('invoke-module')
+
+
+def main(args=None):
+    if args is None:
+        args = sys.argv[1:]
+    parsed_args = docopt(__doc__, args)
+    if parsed_args['--debug']:
+        logging.basicConfig(level=logging.DEBUG)
+    elif parsed_args['--verbose']:
+        logging.basicConfig(level=logging.INFO)
+    else:
+        logging.basicConfig(level=logging.WARNING)
+
+    p = subprocess.Popen(['/usr/bin/env', 'python', parsed_args['<module-file>']],
+                         env=os.environ,
+                         shell=False,
+                         stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE,
+                         stdin=subprocess.PIPE)
+
+    with open(parsed_args['<json-input-file>']) as f:
+        json_params = f.read()
+
+    (stdout, stderr) = p.communicate(json_params)
+
+    if not isinstance(stderr, (bytes, unicode)):
+        stderr = stderr.read()
+    if not isinstance(stdout, (bytes, unicode)):
+        stdout = stdout.read()
+
+    if stderr:
+        print stderr
+
+    try:
+        print json.dumps(json.loads(stdout), sort_keys=True, indent=4)
+    except Exception:
+        print stdout
+
+    return p.returncode
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))
