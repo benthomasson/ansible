@@ -1,0 +1,74 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+"""
+Usage:
+    create-connection [options] <connection-yaml>
+
+Options:
+    -h, --help        Show this page
+    --debug            Show debug logging
+    --verbose        Show verbose logging
+"""
+from docopt import docopt
+import logging
+import os
+import sys
+import subprocess
+import pty
+import yaml
+import json
+from ansible.module_utils.six.moves import cPickle
+from ansible.playbook.play_context import PlayContext
+from ansible.module_utils._text import to_bytes
+
+import distutils.spawn
+
+logger = logging.getLogger('create-connection')
+
+ansible_connection = distutils.spawn.find_executable('ansible-connection')
+
+
+def main(args=None):
+    if args is None:
+        args = sys.argv[1:]
+    parsed_args = docopt(__doc__, args)
+    if parsed_args['--debug']:
+        logging.basicConfig(level=logging.DEBUG)
+    elif parsed_args['--verbose']:
+        logging.basicConfig(level=logging.INFO)
+    else:
+        logging.basicConfig(level=logging.WARNING)
+
+
+    with open(parsed_args['<connection-yaml>']) as f:
+        connection = yaml.load(f.read())
+
+    pc = PlayContext()
+    pc.remote_user = connection['username']
+    pc.port = connection['port']
+    pc.remote_addr = connection['host']
+    pc.private_key_file = connection['ssh_keyfile']
+    pc.connection = connection['connection']
+    pc.network_os = connection['network_os']
+    pc.timeout = connection.get('timeout', 600)
+
+    master, slave = pty.openpty()
+    p = subprocess.Popen([ansible_connection], stdin=slave)
+    stdin = os.fdopen(master, 'wb', 0)
+    os.close(slave)
+
+    src = cPickle.dumps(pc.serialize(), protocol=0)
+    stdin.write(src)
+    stdin.write(b'\n#END_INIT#\n')
+    stdin.write(to_bytes("EXEC: hostname"))
+    stdin.write(b'\n\n')
+    (stdout, stderr) = p.communicate()
+
+    print p.returncode
+
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))
