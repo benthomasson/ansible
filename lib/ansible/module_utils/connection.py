@@ -68,7 +68,7 @@ def exec_command(module, command):
     except socket.error:
         exc = get_exception()
         sf.close()
-        module.fail_json(msg='unable to connect to socket', err=str(exc))
+        module.fail_json(msg='unable to connect to socket1', err=str(exc))
 
     sf.close()
 
