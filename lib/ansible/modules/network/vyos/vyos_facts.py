@@ -15,6 +15,7 @@
 # You should have received a copy of the GNU General Public License
 # along with Ansible.  If not, see <http://www.gnu.org/licenses/>.
 #
+from __future__ import print_function
 ANSIBLE_METADATA = {'metadata_version': '1.0',
                     'status': ['preview'],
                     'supported_by': 'core'}
@@ -101,6 +102,11 @@ from ansible.module_utils.six import iteritems
 from ansible.module_utils.vyos import run_commands
 from ansible.module_utils.vyos import vyos_argument_spec, check_args
 
+import sys
+
+def eprint(*args, **kwargs):
+    print(*args, file=sys.stderr, **kwargs)
+
 
 class FactsBase(object):
 
@@ -125,6 +131,7 @@ class Default(FactsBase):
     def populate(self):
         super(Default, self).populate()
         data = self.responses[0]
+
 
         self.facts['version'] = self.parse_version(data)
         self.facts['serialnum'] = self.parse_serialnum(data)
@@ -191,6 +198,9 @@ class Neighbors(FactsBase):
     def populate(self):
         super(Neighbors, self).populate()
 
+        eprint ('show lldp neighbors:\n ' + str(self.responses[0]))
+        eprint ('show lldp neighbors detail:\n ' + str(self.responses[1]))
+
         all_neighbors = self.responses[0]
         if 'LLDP not configured' not in all_neighbors:
             neighbors = self.parse(
@@ -202,6 +212,7 @@ class Neighbors(FactsBase):
         parsed = list()
         values = None
         for line in data.split('\n'):
+            eprint (line)
             if not line:
                 continue
             elif line[0] == ' ':
@@ -210,6 +221,8 @@ class Neighbors(FactsBase):
                 if values:
                     parsed.append(values)
                 values = line
+        if values:
+            parsed.append(values)
         return parsed
 
     def parse_neighbors(self, data):
@@ -257,6 +270,7 @@ def main():
     module = AnsibleModule(argument_spec=argument_spec,
                            supports_check_mode=True)
 
+    eprint ('vyos_facts!!!')
     warnings = list()
     check_args(module, warnings)
 
