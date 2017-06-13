@@ -22,6 +22,7 @@ __metaclass__ = type
 import os
 import sys
 import re
+from pprint import pformat
 
 from ansible import constants as C
 from ansible.errors import AnsibleError
@@ -137,6 +138,7 @@ class InventoryData(object):
         host_names = set()
         # get host vars from host_vars/ files and vars plugins
         for host in self.hosts.values():
+            display.debug("reconcile_inventory {0}".format(host.name))
             host_names.add(host.name)
 
             mygroups = host.get_groups()
@@ -158,7 +160,9 @@ class InventoryData(object):
 
             # special case for implicit hosts
             if host.implicit:
+                display.debug(pformat(host.vars))
                 host.vars = combine_vars(self.groups['all'].get_vars(), host.vars)
+            display.debug(pformat(host.vars))
 
         # warn if overloading identifier as both group and host
         for conflict in group_names.intersection(host_names):
@@ -242,6 +246,7 @@ class InventoryData(object):
     def set_variable(self, entity, varname, value):
         ''' sets a varible for an inventory object '''
 
+	display.debug('set_variable')
         if entity in self.groups:
             inv_object = self.groups[entity]
         elif entity in self.hosts:
@@ -273,6 +278,7 @@ class InventoryData(object):
         """
         We merge a 'magic' var 'groups' with group name keys and hostname list values into every host variable set. Cache for speed.
         """
+	display.debug('get_groups_dict')
         if not self._groups_dict_cache:
             for (group_name, group) in iteritems(self.groups):
                 self._groups_dict_cache[group_name] = [h.name for h in group.get_hosts()]

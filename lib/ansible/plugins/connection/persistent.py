@@ -22,6 +22,7 @@ import os
 import pty
 import subprocess
 import sys
+from pprint import pformat
 
 from ansible.module_utils._text import to_bytes
 from ansible.module_utils.six.moves import cPickle
@@ -47,6 +48,7 @@ class Connection(ConnectionBase):
 
     def _do_it(self, action):
 
+	display.display("ansible-connection start")
         master, slave = pty.openpty()
         p = subprocess.Popen(["ansible-connection"], stdin=slave, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         stdin = os.fdopen(master, 'wb', 0)
@@ -57,6 +59,8 @@ class Connection(ConnectionBase):
         # Also need to force a protocol that excludes certain control chars as
         # stdin in this case is a pty and control chars will cause problems.
         # that means only protocol=0 will work.
+	display.display("self._play_context.serialize()")
+	display.display(pformat(self._play_context.serialize()))
         src = cPickle.dumps(self._play_context.serialize(), protocol=0)
         stdin.write(src)
 
@@ -66,6 +70,10 @@ class Connection(ConnectionBase):
 
         (stdout, stderr) = p.communicate()
         stdin.close()
+	display.display("ansible-connection end")
+	display.display("ansible-connection rc {0}".format(p.returncode))
+	display.display("ansible-connection stdout {0}".format(stdout))
+	display.display("ansible-connection stderr {0}".format(stdout))
 
         return (p.returncode, stdout, stderr)
 

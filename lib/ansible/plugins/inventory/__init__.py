@@ -74,12 +74,14 @@ class BaseInventoryPlugin(object):
         pass
 
     def populate_host_vars(self, hosts, variables, group, port=None):
+        display.display("populate_host_vars")
 
         if hosts:
             for host in hosts:
                 self.inventory.add_host(host, group=group, port=port)
                 if variables:
                     for k in variables:
+                        display.display("Set {0} to {1} on {2}".format(k, variables[k], host))
                         self.inventory.set_variable(host, k, variables[k])
 
     def _compose(self, template, variables):

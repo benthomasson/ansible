@@ -40,6 +40,15 @@ from ansible.module_utils.six import iteritems
 from ansible.module_utils._text import to_native, to_text
 from ansible.plugins.inventory import BaseInventoryPlugin
 
+from pprint import pformat
+
+try:
+    from __main__ import display
+except ImportError:
+    from ansible.utils.display import Display
+    display = Display()
+
+
 
 class InventoryModule(BaseInventoryPlugin):
     ''' Host inventory parser for ansible using external inventory scripts. '''
@@ -118,10 +127,12 @@ class InventoryModule(BaseInventoryPlugin):
             if not isinstance(processed, Mapping):
                 raise AnsibleError("failed to parse executable inventory script results from {0}: needs to be a json dict\n{1}".format(path, err))
 
+            display.display("processed: " + pformat(processed))
             group = None
             data_from_meta = None
             for (group, gdata) in processed.items():
                 if group == '_meta':
+                    display.display("gdata: " + pformat(gdata))
                     if 'hostvars' in processed:
                         data_from_meta = processed['hostvars']
                 else:
@@ -132,17 +143,24 @@ class InventoryModule(BaseInventoryPlugin):
             # if this "hostvars" exists at all then do not call --host for each
             # host.  This is for efficiency and scripts should still return data
             # if called with --host for backwards compat with 1.2 and earlier.
+            display.display("data_from_meta: " + pformat(data_from_meta))
+            display.display("self._hosts: " + pformat(self._hosts))
             for host in self._hosts:
+                display.display("host: " + host)
                 got = {}
                 if data_from_meta is None:
                     got = self.get_host_variables(path, host)
+                    display.display("got: " + pformat(got))
                 else:
                     try:
                         got = processed.get(host, {})
+                        display.display("got: " + pformat(got))
                     except AttributeError as e:
                         raise AnsibleError("Improperly formatted host information for %s: %s" % (host,to_native(e)))
-
-                    self.populate_host_vars(host, got, group)
+                
+                if group == "_meta":
+                    group = None
+                self.populate_host_vars([host], got, group)
 
         except Exception as e:
             raise AnsibleParserError(to_native(e))

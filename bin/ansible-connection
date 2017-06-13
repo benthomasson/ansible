@@ -38,6 +38,7 @@ import sys
 import time
 import traceback
 import datetime
+from pprint import pformat
 
 from ansible import constants as C
 from ansible.module_utils._text import to_bytes, to_native
@@ -75,8 +76,8 @@ def do_fork():
                 out_file = open(C.DEFAULT_LOG_PATH, 'ab+')
                 err_file = open(C.DEFAULT_LOG_PATH, 'ab+', 0)
             else:
-                out_file = open('/dev/null', 'ab+')
-                err_file = open('/dev/null', 'ab+', 0)
+                out_file = open('/var/log/ansible.log', 'ab+')
+                err_file = open('/var/log/ansible.log', 'ab+', 0)
 
             os.dup2(out_file.fileno(), sys.stdout.fileno())
             os.dup2(err_file.fileno(), sys.stderr.fileno())
@@ -284,7 +285,7 @@ def main():
 
         pc = PlayContext()
         pc.deserialize(pc_data)
-        display.display(repr(pc.serialize()))
+        display.display(pformat(pc.serialize()))
     except Exception as e:
         # FIXME: better error message/handling/logging
         sys.stderr.write(traceback.format_exc())
