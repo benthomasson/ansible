@@ -260,6 +260,7 @@ class PlayContext(Base):
             self.connection = play.connection
 
         if play.remote_user:
+            display.display("Setting remote_user from play {0}".format(play.remote_user))
             self.remote_user = play.remote_user
 
         if play.port:
@@ -297,6 +298,7 @@ class PlayContext(Base):
         for flag in ['connection','remote_user', 'private_key_file', 'verbosity', 'force_handlers', 'step', 'start_at_task', 'diff']:
             attribute = getattr(options, flag, False)
             if attribute:
+                display.display("Set option {0} to {1}".format(flag, attribute))
                 setattr(self, flag, attribute)
 
         if hasattr(options, 'timeout') and options.timeout:
@@ -393,9 +395,11 @@ class PlayContext(Base):
                 # if delegation task ONLY use delegated host vars, avoid delegated FOR host vars
                 if task.delegate_to is not None:
                     if isinstance(delegated_vars, dict) and variable_name in delegated_vars:
+                        display.display("Setting {0} to {1}".format(attr, delegated_vars[variable_name]))
                         setattr(new_info, attr, delegated_vars[variable_name])
                         attrs_considered.append(attr)
                 elif variable_name in variables:
+                    display.display("Setting {0} to {1}".format(attr, variables[variable_name]))
                     setattr(new_info, attr, variables[variable_name])
                     attrs_considered.append(attr)
                 # no else, as no other vars should be considered
@@ -452,17 +456,11 @@ class PlayContext(Base):
             display.display("before new_info.connection_user {0}".format(new_info.connection_user))
             display.display("before self.connection_user {0}".format(self.connection_user))
             display.display("before self.remote_user {0}".format(self.remote_user))
-            display.display("before pwd.getpwuid(os.getuid()).pw_name {0}".format(pwd.getpwuid(os.getuid()).pw_name))
-            if new_info.remote_user == pwd.getpwuid(os.getuid()).pw_name:
-                new_info.connection_user = self.remote_user
-            else:
-                new_info.connection_user = new_info.remote_user
-                new_info.remote_user = pwd.getpwuid(os.getuid()).pw_name
+            new_info.connection_user = new_info.remote_user or self.remote_user
             display.display("after new_info.remote_user {0}".format(new_info.remote_user))
             display.display("after new_info.connection_user {0}".format(new_info.connection_user))
             display.display("after self.connection_user {0}".format(self.connection_user))
             display.display("after self.remote_user {0}".format(self.remote_user))
-            display.display("after pwd.getpwuid(os.getuid()).pw_name {0}".format(pwd.getpwuid(os.getuid()).pw_name))
 
         # set no_log to default if it was not previouslly set
         if new_info.no_log is None:
@@ -633,6 +631,7 @@ class PlayContext(Base):
                 var_val = getattr(self, prop)
                 for var_opt in var_list:
                     if var_opt not in variables and var_val is not None:
+                        display.display("Update variables {0} to {1}".format(var_opt, var_val))
                         variables[var_opt] = var_val
             except AttributeError:
                 continue
