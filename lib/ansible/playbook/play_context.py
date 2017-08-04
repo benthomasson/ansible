@@ -319,7 +319,9 @@ class PlayContext(Base):
         those from the play.
         '''
 
+        display.display("self.connection_user {0}".format(self.connection_user))
         new_info = self.copy()
+        display.display("new_info.connection_user {0}".format(new_info.connection_user))
 
         # loop through a subset of attributes on the task object and set
         # connection fields based on their values
@@ -446,8 +448,21 @@ class PlayContext(Base):
         # this ensures any become settings are obeyed correctly
         # we store original in 'connection_user' for use of network/other modules that fallback to it as login user
         if new_info.connection == 'local':
-            new_info.connection_user = new_info.remote_user
-            new_info.remote_user = pwd.getpwuid(os.getuid()).pw_name
+            display.display("before new_info.remote_user {0}".format(new_info.remote_user))
+            display.display("before new_info.connection_user {0}".format(new_info.connection_user))
+            display.display("before self.connection_user {0}".format(self.connection_user))
+            display.display("before self.remote_user {0}".format(self.remote_user))
+            display.display("before pwd.getpwuid(os.getuid()).pw_name {0}".format(pwd.getpwuid(os.getuid()).pw_name))
+            if new_info.remote_user == pwd.getpwuid(os.getuid()).pw_name:
+                new_info.connection_user = self.remote_user
+            else:
+                new_info.connection_user = new_info.remote_user
+                new_info.remote_user = pwd.getpwuid(os.getuid()).pw_name
+            display.display("after new_info.remote_user {0}".format(new_info.remote_user))
+            display.display("after new_info.connection_user {0}".format(new_info.connection_user))
+            display.display("after self.connection_user {0}".format(self.connection_user))
+            display.display("after self.remote_user {0}".format(self.remote_user))
+            display.display("after pwd.getpwuid(os.getuid()).pw_name {0}".format(pwd.getpwuid(os.getuid()).pw_name))
 
         # set no_log to default if it was not previouslly set
         if new_info.no_log is None:
